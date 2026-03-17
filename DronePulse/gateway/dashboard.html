@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DronePulse</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0d0d;
+      --surface:   #141414;
+      --border:    #222;
+      --text:      #c9d1d9;
+      --muted:     #555;
+      --accent:    #58a6ff;
+      --green:     #3fb950;
+      --red:       #f85149;
+      --yellow:    #d29922;
+      --font:      'JetBrains Mono', monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 12px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Status bar ── */
+    #statusbar {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 8px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    #statusbar .logo { color: var(--accent); font-weight: 600; letter-spacing: .1em; }
+    .sb-item { display: flex; align-items: center; gap: 6px; }
+    .sb-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background .3s, box-shadow .3s;
+    }
+    .sb-dot.connected    { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .sb-dot.disconnected { background: var(--red); }
+    .sb-label { color: var(--muted); }
+    .sb-value { color: var(--text); }
+
+    /* ── Body layout ── */
+    #body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── Left panel – drone cards ── */
+    #panel-left {
+      width: 280px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #panel-left h2 {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }
+
+    .drone-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .drone-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .online-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+    }
+    .online-dot.online {
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+    }
+    .drone-id { font-weight: 600; color: var(--accent); }
+    .drone-meta { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+    .drone-meta span { color: var(--text); }
+    .pills { display: flex; flex-wrap: wrap; gap: 4px; }
+    .pill {
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: #1e2a3a;
+      color: #79c0ff;
+      font-size: 10px;
+    }
+
+    /* ── Right panel – packet log ── */
+    #panel-right {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    #log-header {
+      flex-shrink: 0;
+      display: grid;
+      grid-template-columns: 160px 100px 140px 1fr;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    #log-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .log-row {
+      display: grid;
+      grid-template-columns: 160px 100px 140px 1fr;
+      gap: 8px;
+      padding: 3px 12px;
+      border-bottom: 1px solid #111;
+    }
+    .log-row:hover { background: #161616; }
+    .log-ts    { color: var(--muted); }
+    .log-did   { color: var(--accent); }
+    .log-type  { color: var(--yellow); }
+    .log-data  { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- Status bar -->
+<div id="statusbar">
+  <span class="logo">▶ DRONEPULSE</span>
+  <div class="sb-item">
+    <div class="sb-dot" id="ws-dot"></div>
+    <span class="sb-label">WS</span>
+    <span class="sb-value" id="ws-state">CONNECTING</span>
+  </div>
+  <div class="sb-item">
+    <span class="sb-label">PACKETS</span>
+    <span class="sb-value" id="pkt-count">0</span>
+  </div>
+  <div class="sb-item">
+    <span class="sb-label">DRONES ONLINE</span>
+    <span class="sb-value" id="drones-online">0</span>
+  </div>
+</div>
+
+<!-- Body -->
+<div id="body">
+
+  <!-- Left: drone cards -->
+  <div id="panel-left">
+    <h2>Drones</h2>
+    <div id="drone-list"><span style="color:var(--muted)">No drones yet.</span></div>
+  </div>
+
+  <!-- Right: packet log -->
+  <div id="panel-right">
+    <div id="log-header">
+      <span>Timestamp</span>
+      <span>Drone</span>
+      <span>Msg Type</span>
+      <span>Data</span>
+    </div>
+    <div id="log-body"></div>
+  </div>
+
+</div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────
+  const state = {
+    droneCards: {},   // drone_id → { stats, el }
+    totalPackets: 0,
+  };
+
+  // ── Helpers ───────────────────────────────────────────────────
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toISOString().replace('T', ' ').substring(0, 23);
+  }
+
+  function setWsStatus(s) {
+    const dot = document.getElementById('ws-dot');
+    const lbl = document.getElementById('ws-state');
+    dot.className = 'sb-dot ' + (s === 'OPEN' ? 'connected' : 'disconnected');
+    lbl.textContent = s;
+  }
+
+  // ── Drone cards ───────────────────────────────────────────────
+  function renderCard(stats) {
+    const list = document.getElementById('drone-list');
+
+    if (!state.droneCards[stats.drone_id]) {
+      // clear placeholder
+      if (list.querySelector('span')) list.innerHTML = '';
+      const el = document.createElement('div');
+      el.className = 'drone-card';
+      list.appendChild(el);
+      state.droneCards[stats.drone_id] = { el };
+    }
+
+    const { el } = state.droneCards[stats.drone_id];
+    const msgTypes = stats.message_types || {};
+    const pills = Object.entries(msgTypes)
+      .sort((a, b) => b[1] - a[1])
+      .map(([t, c]) => `<span class="pill">${t} ${c}</span>`)
+      .join('');
+
+    el.innerHTML = `
+      <div class="drone-card-header">
+        <div class="online-dot ${stats.online ? 'online' : ''}"></div>
+        <span class="drone-id">${stats.drone_id}</span>
+      </div>
+      <div class="drone-meta">msgs <span>${stats.message_count}</span> &nbsp;|&nbsp; last seen <span>${stats.last_seen ? fmtTime(stats.last_seen) : '—'}</span></div>
+      <div class="pills">${pills || '<span style="color:var(--muted)">no messages yet</span>'}</div>
+    `;
+
+    // update online count
+    const online = Object.values(state.droneCards)
+      .filter(c => c.el.querySelector('.online-dot.online')).length;
+    document.getElementById('drones-online').textContent = online;
+  }
+
+  // ── Packet log ────────────────────────────────────────────────
+  const LOG_MAX = 300;
+  function appendLog(droneId, pkt) {
+    const body = document.getElementById('log-body');
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    const snippet = JSON.stringify(pkt.data ?? {}).substring(0, 100);
+    row.innerHTML = `
+      <span class="log-ts">${fmtTime(pkt.timestamp)}</span>
+      <span class="log-did">${droneId}</span>
+      <span class="log-type">${pkt.type}</span>
+      <span class="log-data">${snippet}</span>
+    `;
+    body.prepend(row);
+    while (body.children.length > LOG_MAX) body.removeChild(body.lastChild);
+
+    state.totalPackets++;
+    document.getElementById('pkt-count').textContent = state.totalPackets;
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/dashboard/ws`);
+
+    ws.onopen = () => setWsStatus('OPEN');
+
+    ws.onclose = () => {
+      setWsStatus('CLOSED');
+      setTimeout(connect, 3000);
+    };
+
+    ws.onerror = () => ws.close();
+
+    ws.onmessage = ({ data }) => {
+      let msg;
+      try { msg = JSON.parse(data); } catch { return; }
+
+      switch (msg.event) {
+        case 'snapshot':
+          (msg.drones || []).forEach(renderCard);
+          break;
+
+        case 'drone_connected':
+        case 'drone_disconnected': {
+          // re-fetch or just toggle – we'll get updated stats on next telemetry
+          // For immediate feedback update the card if it exists
+          const card = state.droneCards[msg.drone_id];
+          if (card) {
+            const dot = card.el.querySelector('.online-dot');
+            if (dot) dot.classList.toggle('online', msg.event === 'drone_connected');
+          }
+          const online = Object.values(state.droneCards)
+            .filter(c => c.el.querySelector('.online-dot.online')).length;
+          document.getElementById('drones-online').textContent = online;
+          break;
+        }
+
+        case 'telemetry':
+          if (msg.packet) appendLog(msg.drone_id, msg.packet);
+          // refresh card stats via /api/drones
+          fetchAndRenderStats();
+          break;
+      }
+    };
+  }
+
+  // ── Periodic stats refresh ────────────────────────────────────
+  let fetchTimeout = null;
+  function fetchAndRenderStats() {
+    clearTimeout(fetchTimeout);
+    fetchTimeout = setTimeout(() => {
+      fetch('/api/drones')
+        .then(r => r.json())
+        .then(d => (d.stats || []).forEach(renderCard))
+        .catch(() => {});
+    }, 500);  // debounce rapid packets
+  }
+
+  setWsStatus('CONNECTING');
+  connect();
+</script>
+</body>
+</html>
