@@ -1,0 +1,206 @@
+railway variables
+```
+
+Once you see `REDIS_URL` in the list, paste this entire prompt into Claude Code:
+
+---
+```
+We are building DronePulse Phase 2. The project structure is:
+
+DronePulse/
+├── gateway/          (Go - already deployed on Railway, needs Redis integration)
+├── workers/          (Python - new, will be deployed to Railway)
+└── esp32-forwarder/  (ESP32 - already working, sending MAVLink JSON to gateway)
+
+IMPORTANT CONTEXT:
+- Telemetry comes from an ESP32 WROOM (not Raspberry Pi)
+- ESP32 sends JSON packets to gateway /drone/ws with this format:
+  {"drone_id":"DR-001","type":"ATTITUDE","ts":12345,"data":{"roll":0.01,"pitch":0.02,"yaw":1.5,...}}
+- Gateway is live at https://dronepulse-production.up.railway.app
+- Redis internal URL: redis://default:YroZvyKWsMLlIpToIJFqNDyTTNeysDgX@redis.railway.internal:6379
+- DRONE_API_KEY=dronepulse-secret-001
+
+─────────────────────────────────────────
+PART 1 — Update gateway/main.go for Redis
+─────────────────────────────────────────
+Add Redis integration to the existing Go gateway. Use go-redis/v9.
+
+Add to imports:
+  "github.com/redis/go-redis/v9"
+  "context"
+
+Add to go.mod dependencies:
+  github.com/redis/go-redis/v9 v9.5.1
+
+Add Redis client initialization in main():
+  Parse REDIS_URL env var (fallback empty string)
+  If REDIS_URL is set, initialize redis.NewClient from the URL using redis.ParseURL()
+  Store as global *redis.Client named redisClient
+  Test connection with Ping, log success or failure
+
+In the drone packet processing loop, after updating stats and buffer, add:
+  If redisClient != nil:
+    Serialize the full packet to JSON
+    Push to Redis Stream using XADD:
+      Stream key: "telemetry:{droneID}"  (e.g. "telemetry:DR-001")
+      MaxLen: 1000 (approximate, use MAXLEN ~ 1000)
+      Fields: "data" -> json string of packet
+    Do this async (go func) so it never blocks the WebSocket read loop
+
+In main(), add a goroutine that subscribes to Redis PubSub pattern "scores:*":
+  Use redisClient.PSubscribe(ctx, "scores:*")
+  For each message received:
+    Parse the JSON payload
+    Broadcast to all dashboard clients as:
+    {"event":"STATE_UPDATE","drone_id":"DR-001","scores":{...}}
+  This goroutine should reconnect/retry on error every 5 seconds
+
+Update go.mod with: go mod tidy after changes.
+
+─────────────────────────────────────────
+PART 2 — Create workers/ directory
+─────────────────────────────────────────
+Create workers/ with this structure:
+
+workers/
+├── main.py              (entry point, runs all workers)
+├── consumer.py          (Redis Stream consumer)
+├── scoring_engine.py    (computes health scores)
+├── alert_engine.py      (generates alerts)
+├── requirements.txt
+├── Procfile
+└── railway.toml
+
+--- workers/requirements.txt ---
+redis==5.0.1
+python-dotenv==1.0.1
+
+--- workers/Procfile ---
+worker: python main.py
+
+--- workers/railway.toml ---
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python main.py"
+restartPolicyType = "on_failure"
+
+--- workers/main.py ---
+Async entry point. Reads REDIS_URL from env (required). 
+Creates one ConsumerWorker per drone by watching for new stream keys.
+Runs a discovery loop every 10 seconds:
+  Scan Redis for keys matching "telemetry:*"
+  For each new key found, spawn a ConsumerWorker task for that drone_id
+Logs startup and each new drone discovered.
+
+--- workers/consumer.py ---
+Class ConsumerWorker:
+  __init__(self, redis_url, drone_id):
+    self.drone_id = drone_id
+    self.stream_key = f"telemetry:{drone_id}"
+    self.scores_channel = f"scores:{drone_id}"
+    self.redis = redis.from_url(redis_url)
+    self.scoring = ScoringEngine()
+    self.alert = AlertEngine()
+    self.last_id = "0"  (read from beginning on start)
+
+  async run(self):
+    Infinite loop:
+      Read from Redis Stream using XREAD:
+        COUNT 10, BLOCK 1000ms, streams {self.stream_key: self.last_id}
+      For each message:
+        Parse "data" field as JSON to get the packet
+        Update self.last_id to current message ID
+        Pass packet to scoring engine
+        Get scores dict back
+        Add drone_id and timestamp to scores
+        Publish scores to Redis PubSub channel self.scores_channel as JSON
+      On error: log and sleep 2s
+
+--- workers/scoring_engine.py ---
+Class ScoringEngine:
+  Maintains rolling state per message type using a dict self.state
+  
+  score(self, packet) -> dict:
+    Updates self.state with latest values from packet
+    Computes and returns these 8 scores (all 0-100 float, higher=healthier):
+    
+    pwr (power score):
+      From SYS_STATUS: voltage_battery (mV), battery_remaining (%)
+      voltage_battery: 100 if >11800mV, 0 if <10500mV, linear between
+      battery_remaining: use directly as 0-100
+      pwr = (voltage_score * 0.4) + (battery_remaining * 0.6)
+      If no SYS_STATUS data yet: return 50
+    
+    imu (IMU health score):
+      From SCALED_IMU: xacc, yacc, zacc (mg), xgyro, ygyro, zgyro (mrad/s)
+      accel_magnitude = sqrt(xacc^2 + yacc^2 + zacc^2)
+      Expected ~1000mg (1g). Score 100 if 900-1100, degrades outside that range, 0 if <500 or >1500
+      gyro_magnitude = sqrt(xgyro^2 + ygyro^2 + zgyro^2)
+      gyro_score: 100 if <50, 0 if >500, linear between
+      imu = (accel_score * 0.5) + (gyro_score * 0.5)
+      If no SCALED_IMU data yet: return 50
+    
+    ekf (EKF health score):
+      From EKF_STATUS_REPORT: flags, velocity_variance, pos_horiz_variance, pos_vert_variance, compass_variance
+      flag_score: 100 if flags >= 0x1F (all healthy bits set), 50 if flags > 0, 0 if flags == 0
+      variance_score: average of 4 variances, score 100 if avg<0.1, 0 if avg>1.0, linear
+      ekf = (flag_score * 0.6) + (variance_score * 0.4)
+      If no EKF data yet: return 50
+    
+    gps (GPS health score):
+      From GPS_RAW_INT: fix_type, satellites_visible, eph (hdop*100)
+      fix_score: 0→0, 1→10, 2→50, 3→80, 4→100, 5+→100
+      sat_score: 0 if sats<4, linear 0-100 for 4-12 sats, 100 if >12
+      hdop_score: 100 if eph<150, 0 if eph>500, linear between
+      gps = (fix_score*0.4) + (sat_score*0.3) + (hdop_score*0.3)
+      If no GPS data yet: return 50
+    
+    ctl (control score):
+      From ATTITUDE: roll, pitch (radians)
+      From VFR_HUD: groundspeed
+      roll_score: 100 if abs(roll)<0.1, 0 if abs(roll)>0.5, linear
+      pitch_score: 100 if abs(pitch)<0.1, 0 if abs(pitch)>0.5, linear
+      ctl = (roll_score * 0.5) + (pitch_score * 0.5)
+      If no ATTITUDE data: return 50
+    
+    mot (motor/output score):
+      From RC_CHANNELS_RAW: chan1_raw to chan4_raw (PWM values 1000-2000)
+      For each channel: score 100 if 1000-2000, 0 if outside range
+      Check balance: max_chan - min_chan, score 100 if diff<200, 0 if diff>600
+      mot = (range_score * 0.5) + (balance_score * 0.5)
+      If no RC data: return 50
+    
+    com (comms score):
+      From SYS_STATUS: drop_rate_comm (percentage * 100)
+      com = 100 if drop_rate==0, linear down to 0 if drop_rate>=5000 (50%)
+      From HEARTBEAT: track time since last heartbeat
+      heartbeat_score: 100 if <2s ago, 0 if >5s ago, linear
+      com = (drop_score * 0.5) + (heartbeat_score * 0.5)
+      If no data: return 50
+    
+    composite:
+      weighted average:
+      (pwr*0.20) + (imu*0.15) + (ekf*0.20) + (gps*0.15) + (ctl*0.10) + (mot*0.10) + (com*0.10)
+      Round all scores to 2 decimal places
+
+--- workers/alert_engine.py ---
+Class AlertEngine:
+  check(self, scores, state) -> list of alert dicts:
+    Returns list of active alerts. Each alert:
+    {"level": "warn"|"critical", "code": "SHORT_CODE", "message": "human readable"}
+    
+    Check these conditions:
+    - pwr < 30: critical, "LOW_BATTERY", "Battery critically low"
+    - pwr < 50: warn, "BATTERY_WARN", "Battery below 50%"
+    - gps < 40: critical, "GPS_POOR", "Poor GPS signal"
+    - ekf < 40: critical, "EKF_UNHEALTHY", "EKF health degraded"
+    - imu < 40: critical, "IMU_FAULT", "IMU readings abnormal"
+    - com < 40: critical, "COMMS_LOST", "Communication link degraded"
+    - composite < 50: warn, "HEALTH_WARN", "Overall drone health low"
+    - composite < 30: critical, "HEALTH_CRITICAL", "Drone health critical"
+
+After creating all files:
+1. Run: cd gateway && go mod tidy && railway up
+2. Then print instructions for deploying workers to Railway as a separate service
