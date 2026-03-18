@@ -38,6 +38,20 @@ type Packet struct {
 	Data      json.RawMessage `json:"data"`
 }
 
+// PostPacket is the per-packet shape sent by the ESP32 HTTP forwarder.
+type PostPacket struct {
+	Type string          `json:"type"`
+	Ts   int64           `json:"ts"`
+	Data json.RawMessage `json:"data"`
+}
+
+// PostTelemetryRequest is the body shape for POST /drone/telemetry.
+type PostTelemetryRequest struct {
+	DroneID string       `json:"drone_id"`
+	APIKey  string       `json:"api_key"`
+	Packets []PostPacket `json:"packets"`
+}
+
 // ─── Hub ─────────────────────────────────────────────────────────────────────
 
 type Hub struct {
@@ -69,13 +83,20 @@ func (h *Hub) broadcastToDashboards(msg any) {
 	}
 	h.mu.RUnlock()
 
+	var dead []*websocket.Conn
 	for _, c := range conns {
+		c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
-			h.mu.Lock()
+			dead = append(dead, c)
+		}
+	}
+	if len(dead) > 0 {
+		h.mu.Lock()
+		for _, c := range dead {
 			delete(h.dashboards, c)
-			h.mu.Unlock()
 			c.Close()
 		}
+		h.mu.Unlock()
 	}
 }
 
@@ -290,6 +311,101 @@ func dashboardWSHandler(hub *Hub) http.HandlerFunc {
 	}
 }
 
+func postTelemetryHandler(hub *Hub, apiKey string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req PostTelemetryRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+
+		if req.APIKey != apiKey {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
+		droneID := req.DroneID
+		if droneID == "" {
+			http.Error(w, `{"error":"missing drone_id"}`, http.StatusBadRequest)
+			return
+		}
+
+		ctx := context.Background()
+		now := time.Now().UTC()
+
+		// Ensure stats entry exists and mark drone as seen.
+		hub.mu.Lock()
+		if _, exists := hub.stats[droneID]; !exists {
+			hub.stats[droneID] = &DroneStats{
+				DroneID:      droneID,
+				ConnectedAt:  now,
+				MessageTypes: make(map[string]int),
+			}
+		}
+		hub.stats[droneID].Online = true
+		hub.stats[droneID].LastSeen = now
+		hub.mu.Unlock()
+
+		processed := 0
+		for _, pp := range req.Packets {
+			if pp.Type == "" || pp.Data == nil {
+				continue
+			}
+
+			// Convert to the canonical Packet used everywhere else.
+			pkt := Packet{
+				Timestamp: now.Format(time.RFC3339),
+				Type:      pp.Type,
+				Data:      pp.Data,
+			}
+
+			// Update in-memory stats and buffer (same as WS handler).
+			hub.mu.Lock()
+			s := hub.stats[droneID]
+			s.MessageCount++
+			s.MessageTypes[pkt.Type]++
+			buf := append(hub.buffer[droneID], pkt)
+			if len(buf) > 100 {
+				buf = buf[len(buf)-100:]
+			}
+			hub.buffer[droneID] = buf
+			hub.mu.Unlock()
+
+			// Broadcast to dashboard clients (same envelope as WS handler).
+			hub.broadcastToDashboards(map[string]any{
+				"event":    "telemetry",
+				"drone_id": droneID,
+				"packet":   pkt,
+			})
+
+			// Push to Redis Stream for the workers scoring pipeline.
+			// Re-encode as the full gateway packet shape the workers expect.
+			raw, err := json.Marshal(map[string]any{
+				"drone_id": droneID,
+				"type":     pkt.Type,
+				"ts":       pp.Ts,
+				"data":     pp.Data,
+			})
+			if err == nil {
+				pushToStream(ctx, droneID, raw)
+			}
+
+			processed++
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":       true,
+			"received": processed,
+		})
+	}
+}
+
 func dronesAPIHandler(hub *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hub.mu.RLock()
@@ -375,6 +491,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/drone/ws", droneWSHandler(hub, apiKey))
+	mux.HandleFunc("/drone/telemetry", postTelemetryHandler(hub, apiKey))
 	mux.HandleFunc("/dashboard/ws", dashboardWSHandler(hub))
 	mux.HandleFunc("/api/drones", dronesAPIHandler(hub))
 	mux.HandleFunc("/api/telemetry", telemetryAPIHandler(hub))

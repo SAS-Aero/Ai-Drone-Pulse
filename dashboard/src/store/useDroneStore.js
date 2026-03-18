@@ -23,6 +23,11 @@ function createEmptyHistory() {
   return h
 }
 
+const TELEMETRY_TYPES = new Set([
+  'ATTITUDE', 'GPS_RAW_INT', 'GLOBAL_POSITION_INT',
+  'VFR_HUD', 'SYS_STATUS', 'HEARTBEAT', 'RC_CHANNELS_RAW', 'BATTERY_STATUS',
+])
+
 function initDrone(id, overrides = {}) {
   return {
     id,
@@ -31,6 +36,7 @@ function initDrone(id, overrides = {}) {
     alerts: [],
     position: null,
     history: createEmptyHistory(),
+    telemetry: {},        // raw telemetry cache: { ATTITUDE: {...}, VFR_HUD: {...}, ... }
     lastSeen: null,
     ...overrides,
   }
@@ -50,7 +56,7 @@ function appendHistory(history, scores) {
   return next
 }
 
-const useDroneStore = create((set, get) => ({
+const useDroneStore = create((set) => ({
   drones: {},
   activeDroneId: null,
   wsStatus: 'disconnected',
@@ -66,15 +72,16 @@ const useDroneStore = create((set, get) => ({
 
     switch (event) {
       case 'snapshot': {
-        const incoming = msg.drones || {}
+        // Gateway sends drones as an array of DroneStats objects
+        const incoming = msg.drones || []
         const drones = {}
-        Object.entries(incoming).forEach(([id, data]) => {
+        const arr = Array.isArray(incoming) ? incoming : Object.values(incoming)
+        arr.forEach((data) => {
+          const id = data?.drone_id || data?.id
+          if (!id) return
           drones[id] = initDrone(id, {
-            connected: data?.connected ?? false,
-            scores: { ...DEFAULT_SCORES, ...(data?.scores || {}) },
-            alerts: data?.alerts || [],
-            position: data?.position || null,
-            lastSeen: data?.connected ? Date.now() : null,
+            connected: data?.online ?? data?.connected ?? false,
+            lastSeen: data?.online ? Date.now() : null,
           })
         })
         set({ drones })
@@ -116,32 +123,48 @@ const useDroneStore = create((set, get) => ({
       case 'telemetry': {
         const id = msg.drone_id
         if (!id) break
-        if (msg.type === 'GLOBAL_POSITION_INT') {
-          const data = msg.data || {}
-          const lat = data.lat !== undefined ? data.lat / 1e7 : null
-          const lng = data.lon !== undefined ? data.lon / 1e7 : null
-          const alt = data.alt !== undefined ? data.alt / 1000 : null
-          if (lat !== null && lng !== null) {
-            set((state) => ({
-              drones: {
-                ...state.drones,
-                [id]: {
-                  ...(state.drones[id] || initDrone(id)),
-                  position: { lat, lng, alt },
-                  lastSeen: Date.now(),
-                },
-              },
-            }))
+        // Gateway wraps packet under msg.packet; fall back to flat format
+        const pkt = msg.packet || msg
+        const type = pkt.type || msg.type
+        const data = pkt.data || msg.data || {}
+        if (!type) break
+        set((state) => {
+          const existing = state.drones[id] || initDrone(id)
+          const updates = { lastSeen: Date.now(), connected: true }
+
+          // Cache raw packet if it's a known type
+          if (TELEMETRY_TYPES.has(type)) {
+            updates.telemetry = { ...existing.telemetry, [type]: data }
           }
-        }
+
+          // Update GPS position from GLOBAL_POSITION_INT
+          if (type === 'GLOBAL_POSITION_INT') {
+            const lat = data.lat !== undefined ? data.lat / 1e7 : null
+            const lng = data.lon !== undefined ? data.lon / 1e7 : null
+            const alt = data.alt !== undefined ? data.alt / 1000 : null
+            if (lat !== null && lng !== null) {
+              updates.position = { lat, lng, alt }
+            }
+          }
+
+          return {
+            drones: {
+              ...state.drones,
+              [id]: { ...existing, ...updates },
+            },
+          }
+        })
         break
       }
 
       case 'STATE_UPDATE': {
         const id = msg.drone_id
         if (!id) break
-        const scores = msg.scores || {}
-        const alerts = msg.alerts || []
+        const raw = msg.scores || {}
+        // alerts live inside scores payload from the worker
+        const alerts = raw.alerts || msg.alerts || []
+        // strip non-score keys before merging
+        const { alerts: _a, drone_id: _d, timestamp: _t, ...scores } = raw
         set((state) => {
           const existing = state.drones[id] || initDrone(id)
           const mergedScores = { ...existing.scores, ...scores }

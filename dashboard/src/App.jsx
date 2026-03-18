@@ -6,6 +6,7 @@ import FleetPage from './pages/FleetPage'
 import DetailPage from './pages/DetailPage'
 import AlertsPage from './pages/AlertsPage'
 import MapPage from './pages/MapPage'
+import HUDPage from './pages/HUDPage'
 import { useWebSocket } from './hooks/useWebSocket'
 
 export default function App() {
@@ -19,6 +20,8 @@ export default function App() {
         <main className="main-content">
           <Routes>
             <Route path="/" element={<Navigate to="/fleet" replace />} />
+            <Route path="/hud" element={<HUDPage />} />
+            <Route path="/hud/:droneId" element={<HUDPage />} />
             <Route path="/fleet" element={<FleetPage />} />
             <Route path="/detail/:droneId" element={<DetailPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
@@ -30,3 +33,4 @@ export default function App() {
     </div>
   )
 }
+

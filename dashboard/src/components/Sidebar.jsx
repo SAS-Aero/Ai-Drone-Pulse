@@ -1,6 +1,6 @@
 import React from 'react'
 import { NavLink } from 'react-router-dom'
-import { LayoutGrid, Bell, Map, Radio } from 'lucide-react'
+import { Crosshair, LayoutGrid, Bell, Map, Radio } from 'lucide-react'
 import useDroneStore from '../store/useDroneStore'
 
 export default function Sidebar() {
@@ -16,6 +16,14 @@ export default function Sidebar() {
   return (
     <div className="sidebar">
       {/* Nav links */}
+      <NavLink
+        to="/hud"
+        className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}
+        title="HUD"
+      >
+        <Crosshair size={20} />
+      </NavLink>
+
       <NavLink
         to="/fleet"
         className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}
