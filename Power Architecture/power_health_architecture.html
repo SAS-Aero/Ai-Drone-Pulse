@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Power Health Detection Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg: #050a0f;
+    --bg2: #0a1520;
+    --bg3: #0f1e2e;
+    --border: #1a3a5c;
+    --border2: #0d2a42;
+    --accent: #00d4ff;
+    --accent2: #0099cc;
+    --warn: #ff9500;
+    --crit: #ff3b30;
+    --ok: #30d158;
+    --text: #e8f4f8;
+    --text2: #7fb3cc;
+    --text3: #3d7a9e;
+    --purple: #bf5af2;
+    --yellow: #ffd60a;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+    padding: 40px 24px;
+    position: relative;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 80% 40% at 50% -10%, rgba(0,212,255,0.07) 0%, transparent 60%),
+      radial-gradient(ellipse 50% 50% at 90% 80%, rgba(0,153,204,0.05) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .grid-bg {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* HEADER */
+  .header {
+    text-align: center;
+    margin-bottom: 48px;
+    animation: fadeDown 0.6s ease both;
+  }
+
+  .header .tag {
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid rgba(0,212,255,0.3);
+    padding: 4px 12px;
+    border-radius: 2px;
+    margin-bottom: 16px;
+  }
+
+  .header h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(24px, 4vw, 42px);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    line-height: 1.1;
+  }
+
+  .header h1 span { color: var(--accent); }
+
+  .header p {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text3);
+    letter-spacing: 0.05em;
+  }
+
+  /* ARCHITECTURE FLOW */
+  .arch {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: center;
+  }
+
+  /* LAYER */
+  .layer {
+    width: 100%;
+    animation: fadeUp 0.5s ease both;
+  }
+
+  .layer-label {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 8px;
+    padding-left: 4px;
+  }
+
+  /* CONNECTOR */
+  .connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 40px;
+    justify-content: center;
+    gap: 2px;
+    animation: fadeUp 0.5s ease both;
+  }
+
+  .connector-line {
+    width: 2px;
+    height: 16px;
+    background: linear-gradient(to bottom, var(--border), var(--accent2));
+  }
+
+  .connector-arrow {
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--accent2);
+  }
+
+  .connector-label {
+    font-size: 9px;
+    color: var(--text3);
+    letter-spacing: 0.1em;
+    margin-top: 2px;
+  }
+
+  /* SECTION BOXES */
+  .section-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 20px 24px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .section-box::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.5;
+  }
+
+  .section-box.bms::before { background: linear-gradient(90deg, transparent, var(--ok), transparent); }
+  .section-box.bat::before { background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+  .section-box.fusion::before { background: linear-gradient(90deg, transparent, var(--purple), transparent); }
+  .section-box.scoring::before { background: linear-gradient(90deg, transparent, var(--yellow), transparent); }
+  .section-box.output::before { background: linear-gradient(90deg, transparent, var(--warn), transparent); }
+
+  .section-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .section-title .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .dot-green { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot-blue  { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .dot-purple{ background: var(--purple); box-shadow: 0 0 8px var(--purple); }
+  .dot-yellow{ background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+  .dot-orange{ background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+  /* SOURCE LAYER */
+  .sources-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+
+  .source-card {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 14px;
+    transition: border-color 0.2s, transform 0.2s;
+    cursor: default;
+  }
+
+  .source-card:hover {
+    border-color: var(--accent2);
+    transform: translateY(-2px);
+  }
+
+  .source-card .src-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 6px;
+    letter-spacing: 0.05em;
+  }
+
+  .source-card.bms-card .src-name { color: var(--ok); }
+  .source-card.sys-card .src-name { color: var(--purple); }
+
+  .source-card .src-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .field-tag {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    background: rgba(0,212,255,0.08);
+    color: var(--text2);
+    border: 1px solid rgba(0,212,255,0.15);
+    letter-spacing: 0.05em;
+  }
+
+  .field-tag.green { background: rgba(48,209,88,0.08); border-color: rgba(48,209,88,0.2); color: #7ee8a2; }
+  .field-tag.purple { background: rgba(191,90,242,0.08); border-color: rgba(191,90,242,0.2); color: #d48ef7; }
+
+  /* PROCESSING LAYER */
+  .processing-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+
+  .proc-card {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 14px;
+  }
+
+  .proc-card .proc-title {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text2);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border2);
+  }
+
+  .proc-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 10px;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+
+  .proc-item .pi-label {
+    color: var(--text);
+    font-weight: 600;
+    min-width: 90px;
+    flex-shrink: 0;
+  }
+
+  .proc-item .pi-val {
+    color: var(--text3);
+  }
+
+  /* THRESHOLD TABLE */
+  .threshold-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+
+  .thresh-group {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .thresh-header {
+    padding: 8px 14px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: rgba(0,0,0,0.3);
+    border-bottom: 1px solid var(--border2);
+    color: var(--text2);
+  }
+
+  .thresh-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10px;
+  }
+
+  .thresh-table tr {
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    transition: background 0.15s;
+  }
+
+  .thresh-table tr:hover { background: rgba(0,212,255,0.04); }
+  .thresh-table tr:last-child { border-bottom: none; }
+
+  .thresh-table td {
+    padding: 6px 14px;
+    color: var(--text2);
+    vertical-align: top;
+  }
+
+  .thresh-table td:first-child {
+    color: var(--text);
+    font-weight: 600;
+    width: 40%;
+  }
+
+  .badge {
+    display: inline-block;
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-warn { background: rgba(255,149,0,0.15); color: var(--warn); border: 1px solid rgba(255,149,0,0.3); }
+  .badge-crit { background: rgba(255,59,48,0.15); color: var(--crit); border: 1px solid rgba(255,59,48,0.3); }
+  .badge-ok   { background: rgba(48,209,88,0.15); color: var(--ok);   border: 1px solid rgba(48,209,88,0.3); }
+
+  /* SCORING SECTION */
+  .scoring-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .weight-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .weight-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .weight-info {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+  }
+
+  .weight-name { color: var(--text2); }
+  .weight-pct  { color: var(--accent); font-weight: 600; }
+
+  .weight-bar-bg {
+    height: 4px;
+    background: var(--border2);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .weight-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 1s ease;
+    animation: growBar 1s ease both;
+  }
+
+  @keyframes growBar {
+    from { width: 0 !important; }
+  }
+
+  .override-box {
+    background: rgba(255,59,48,0.05);
+    border: 1px solid rgba(255,59,48,0.2);
+    border-radius: 4px;
+    padding: 14px;
+  }
+
+  .override-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--crit);
+    margin-bottom: 10px;
+  }
+
+  .override-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    color: #ff8077;
+    margin-bottom: 6px;
+    line-height: 1.4;
+  }
+
+  .override-item::before {
+    content: '⊘';
+    color: var(--crit);
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+
+  /* OUTPUT SECTION */
+  .output-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+
+  .output-card {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    padding: 14px;
+  }
+
+  .output-card .oc-title {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border2);
+  }
+
+  .output-item {
+    font-size: 10px;
+    color: var(--text2);
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.4;
+  }
+
+  .output-item::before {
+    content: '';
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--accent2);
+    flex-shrink: 0;
+  }
+
+  .output-card.preflight .output-item::before { background: var(--ok); }
+  .output-card.inflight .output-item::before  { background: var(--accent); }
+  .output-card.postflt .output-item::before   { background: var(--purple); }
+
+  /* TIMING */
+  .layer:nth-child(1) { animation-delay: 0.05s; }
+  .layer:nth-child(3) { animation-delay: 0.15s; }
+  .layer:nth-child(5) { animation-delay: 0.25s; }
+  .layer:nth-child(7) { animation-delay: 0.35s; }
+  .layer:nth-child(9) { animation-delay: 0.45s; }
+  .connector:nth-child(2) { animation-delay: 0.1s; }
+  .connector:nth-child(4) { animation-delay: 0.2s; }
+  .connector:nth-child(6) { animation-delay: 0.3s; }
+  .connector:nth-child(8) { animation-delay: 0.4s; }
+
+  @keyframes fadeDown {
+    from { opacity: 0; transform: translateY(-20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* LEGEND */
+  .legend {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    margin-top: 32px;
+    flex-wrap: wrap;
+    animation: fadeUp 0.5s 0.5s ease both;
+    opacity: 0;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text3);
+    letter-spacing: 0.05em;
+  }
+
+  .legend-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .sources-grid { grid-template-columns: repeat(2, 1fr); }
+    .processing-grid { grid-template-columns: 1fr; }
+    .threshold-grid { grid-template-columns: 1fr; }
+    .scoring-layout { grid-template-columns: 1fr; }
+    .output-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="grid-bg"></div>
+<div class="container">
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="tag">AI Diagnostics System</div>
+    <h1>Power Health <span>Detection</span> Architecture</h1>
+    <p>Multi-layer real-time power subsystem monitoring pipeline</p>
+  </div>
+
+  <div class="arch">
+
+    <!-- LAYER 1: DATA SOURCES -->
+    <div class="layer">
+      <div class="layer-label">Layer 1 — Data Sources</div>
+      <div class="section-box bms">
+        <div class="section-title">
+          <span class="dot dot-green"></span>
+          Raw Sensor Inputs
+        </div>
+        <div class="sources-grid">
+          <div class="source-card bms-card">
+            <div class="src-name">BMS / Semi-BMS</div>
+            <div class="src-fields">
+              <span class="field-tag green">cell_1..N voltage</span>
+              <span class="field-tag green">cell imbalance</span>
+              <span class="field-tag green">cell temp</span>
+              <span class="field-tag green">cell count</span>
+              <span class="field-tag green">BMS flags</span>
+            </div>
+          </div>
+          <div class="source-card">
+            <div class="src-name">BAT</div>
+            <div class="src-fields">
+              <span class="field-tag">Volt</span>
+              <span class="field-tag">VoltR</span>
+              <span class="field-tag">Curr</span>
+              <span class="field-tag">CurrTot</span>
+              <span class="field-tag">EnrgTot</span>
+              <span class="field-tag">Temp</span>
+              <span class="field-tag">Res</span>
+              <span class="field-tag">RemPct</span>
+            </div>
+          </div>
+          <div class="source-card sys-card">
+            <div class="src-name">MCU</div>
+            <div class="src-fields">
+              <span class="field-tag purple">MVolt</span>
+              <span class="field-tag purple">MVmin</span>
+              <span class="field-tag purple">MVmax</span>
+              <span class="field-tag purple">MTemp</span>
+            </div>
+          </div>
+          <div class="source-card sys-card">
+            <div class="src-name">POWR</div>
+            <div class="src-fields">
+              <span class="field-tag purple">Vcc</span>
+              <span class="field-tag purple">VServo</span>
+              <span class="field-tag purple">Flags</span>
+              <span class="field-tag purple">AccFlags</span>
+              <span class="field-tag purple">Safety</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="connector">
+      <div class="connector-line"></div>
+      <div class="connector-arrow"></div>
+      <div class="connector-label">ingestion &amp; sync</div>
+    </div>
+
+    <!-- LAYER 2: PROCESSING -->
+    <div class="layer">
+      <div class="layer-label">Layer 2 — Signal Processing &amp; Feature Extraction</div>
+      <div class="section-box bat">
+        <div class="section-title">
+          <span class="dot dot-blue"></span>
+          Computed Metrics
+        </div>
+        <div class="processing-grid">
+          <div class="proc-card">
+            <div class="proc-title">Cell-Level (BMS)</div>
+            <div class="proc-item"><span class="pi-label">Per-cell V</span><span class="pi-val">each cell voltage real-time</span></div>
+            <div class="proc-item"><span class="pi-label">Imbalance</span><span class="pi-val">max(cell) − min(cell)</span></div>
+            <div class="proc-item"><span class="pi-label">Weakest cell</span><span class="pi-val">min(all cells)</span></div>
+            <div class="proc-item"><span class="pi-label">Cell delta rate</span><span class="pi-val">d(imbalance)/dt</span></div>
+          </div>
+          <div class="proc-card">
+            <div class="proc-title">Pack-Level (BAT)</div>
+            <div class="proc-item"><span class="pi-label">Internal Res</span><span class="pi-val">BAT.Res vs stored baseline</span></div>
+            <div class="proc-item"><span class="pi-label">C-rate</span><span class="pi-val">Curr ÷ capacity_Ah</span></div>
+            <div class="proc-item"><span class="pi-label">Voltage sag</span><span class="pi-val">Volt − VoltR under load</span></div>
+            <div class="proc-item"><span class="pi-label">Energy remain</span><span class="pi-val">1 − (EnrgTot ÷ rated_Wh)</span></div>
+            <div class="proc-item"><span class="pi-label">Discharge accel</span><span class="pi-val">d²V/dt² (2nd derivative)</span></div>
+          </div>
+          <div class="proc-card">
+            <div class="proc-title">System Power (MCU/POWR)</div>
+            <div class="proc-item"><span class="pi-label">FC V stability</span><span class="pi-val">MCU.MVmax − MVmin</span></div>
+            <div class="proc-item"><span class="pi-label">Brownout risk</span><span class="pi-val">MVolt &lt; 4.75V threshold</span></div>
+            <div class="proc-item"><span class="pi-label">Servo rail</span><span class="pi-val">POWR.VServo stability</span></div>
+            <div class="proc-item"><span class="pi-label">FC temp</span><span class="pi-val">MCU.MTemp trending</span></div>
+            <div class="proc-item"><span class="pi-label">Power flags</span><span class="pi-val">POWR.Flags bitmask decode</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="connector">
+      <div class="connector-line"></div>
+      <div class="connector-arrow"></div>
+      <div class="connector-label">threshold evaluation</div>
+    </div>
+
+    <!-- LAYER 3: THRESHOLDS -->
+    <div class="layer">
+      <div class="layer-label">Layer 3 — Threshold Evaluation</div>
+      <div class="section-box">
+        <div class="section-title">
+          <span class="dot dot-blue"></span>
+          Warning &amp; Critical Thresholds
+        </div>
+        <div class="threshold-grid">
+          <div class="thresh-group">
+            <div class="thresh-header">BMS / Cell Health</div>
+            <table class="thresh-table">
+              <tr><td>Per-cell voltage</td><td><span class="badge badge-warn">WARN &lt;3.7V</span></td><td><span class="badge badge-crit">CRIT &lt;3.5V</span></td></tr>
+              <tr><td>Cell imbalance</td><td><span class="badge badge-warn">WARN &gt;0.1V</span></td><td><span class="badge badge-crit">CRIT &gt;0.2V</span></td></tr>
+              <tr><td>Weakest cell</td><td><span class="badge badge-warn">WARN &lt;3.6V</span></td><td><span class="badge badge-crit">CRIT &lt;3.4V</span></td></tr>
+              <tr><td>BMS fault flag</td><td>—</td><td><span class="badge badge-crit">CRIT any flag</span></td></tr>
+            </table>
+          </div>
+          <div class="thresh-group">
+            <div class="thresh-header">Pack Health (BAT)</div>
+            <table class="thresh-table">
+              <tr><td>Internal resistance</td><td><span class="badge badge-warn">WARN +30% baseline</span></td><td><span class="badge badge-crit">CRIT 2× baseline</span></td></tr>
+              <tr><td>C-rate stress</td><td><span class="badge badge-warn">WARN &gt;0.8× rated</span></td><td><span class="badge badge-crit">CRIT &gt;rated C</span></td></tr>
+              <tr><td>Voltage sag</td><td><span class="badge badge-warn">WARN &gt;0.5V</span></td><td><span class="badge badge-crit">CRIT &gt;1.0V</span></td></tr>
+              <tr><td>Energy remaining</td><td><span class="badge badge-warn">WARN &lt;25%</span></td><td><span class="badge badge-crit">CRIT &lt;10%</span></td></tr>
+            </table>
+          </div>
+          <div class="thresh-group">
+            <div class="thresh-header">Thermal</div>
+            <table class="thresh-table">
+              <tr><td>Battery temp (hot)</td><td><span class="badge badge-warn">WARN &gt;45°C</span></td><td><span class="badge badge-crit">CRIT &gt;60°C</span></td></tr>
+              <tr><td>Battery temp (cold)</td><td><span class="badge badge-warn">WARN &lt;5°C</span></td><td><span class="badge badge-crit">CRIT &lt;0°C</span></td></tr>
+              <tr><td>FC temperature</td><td><span class="badge badge-warn">WARN &gt;70°C</span></td><td><span class="badge badge-crit">CRIT &gt;85°C</span></td></tr>
+            </table>
+          </div>
+          <div class="thresh-group">
+            <div class="thresh-header">System Power</div>
+            <table class="thresh-table">
+              <tr><td>FC voltage (Vcc)</td><td><span class="badge badge-warn">WARN &lt;4.9V</span></td><td><span class="badge badge-crit">CRIT &lt;4.75V</span></td></tr>
+              <tr><td>Vcc jitter</td><td><span class="badge badge-warn">WARN &gt;0.1V</span></td><td><span class="badge badge-crit">CRIT &gt;0.2V</span></td></tr>
+              <tr><td>Servo rail</td><td><span class="badge badge-warn">WARN &lt;4.8V</span></td><td><span class="badge badge-crit">CRIT &lt;4.5V</span></td></tr>
+              <tr><td>Current spike</td><td><span class="badge badge-warn">WARN &gt;50A/s</span></td><td><span class="badge badge-crit">CRIT &gt;100A/s</span></td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="connector">
+      <div class="connector-line"></div>
+      <div class="connector-arrow"></div>
+      <div class="connector-label">weighted aggregation</div>
+    </div>
+
+    <!-- LAYER 4: SCORING -->
+    <div class="layer">
+      <div class="layer-label">Layer 4 — Health Score Aggregation</div>
+      <div class="section-box fusion">
+        <div class="section-title">
+          <span class="dot dot-yellow"></span>
+          Power Health Score Engine
+        </div>
+        <div class="scoring-layout">
+          <div class="weight-bars">
+            <div style="font-size:10px; color:var(--text3); margin-bottom:8px; letter-spacing:0.1em; text-transform:uppercase;">Subsystem Weights → Final Score (0–100)</div>
+            <div class="weight-item">
+              <div class="weight-info">
+                <span class="weight-name">Cell Health (BMS)</span>
+                <span class="weight-pct">35%</span>
+              </div>
+              <div class="weight-bar-bg">
+                <div class="weight-bar-fill" style="width:35%; background: linear-gradient(90deg, var(--ok), #7ee8a2);"></div>
+              </div>
+            </div>
+            <div class="weight-item">
+              <div class="weight-info">
+                <span class="weight-name">Pack Health (BAT)</span>
+                <span class="weight-pct">40%</span>
+              </div>
+              <div class="weight-bar-bg">
+                <div class="weight-bar-fill" style="width:40%; background: linear-gradient(90deg, var(--accent), var(--accent2));"></div>
+              </div>
+            </div>
+            <div class="weight-item">
+              <div class="weight-info">
+                <span class="weight-name">Thermal Health</span>
+                <span class="weight-pct">15%</span>
+              </div>
+              <div class="weight-bar-bg">
+                <div class="weight-bar-fill" style="width:15%; background: linear-gradient(90deg, var(--warn), #ffb740);"></div>
+              </div>
+            </div>
+            <div class="weight-item">
+              <div class="weight-info">
+                <span class="weight-name">System Power Stability</span>
+                <span class="weight-pct">10%</span>
+              </div>
+              <div class="weight-bar-bg">
+                <div class="weight-bar-fill" style="width:10%; background: linear-gradient(90deg, var(--purple), #d48ef7);"></div>
+              </div>
+            </div>
+            <div style="margin-top:12px; padding:10px; background:rgba(0,0,0,0.3); border-radius:4px; border:1px solid var(--border2);">
+              <div style="font-size:9px; color:var(--text3); letter-spacing:0.1em; text-transform:uppercase; margin-bottom:6px;">Score Bands</div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <span class="badge badge-ok">80–100 HEALTHY</span>
+                <span class="badge badge-warn">50–79 DEGRADED</span>
+                <span class="badge badge-crit">0–49 CRITICAL</span>
+              </div>
+            </div>
+          </div>
+          <div class="override-box">
+            <div class="override-title">⚠ Hard Override Rules</div>
+            <div style="font-size:9px; color:var(--text3); margin-bottom:10px; letter-spacing:0.05em;">Any of these → Score forced to 0 regardless of weighted calculation</div>
+            <div class="override-item">Any BMS cell reported dead or missing</div>
+            <div class="override-item">Cell imbalance &gt; 0.3V</div>
+            <div class="override-item">Battery temp &gt; 65°C</div>
+            <div class="override-item">MCU brownout event detected</div>
+            <div class="override-item">POWR critical flag set</div>
+            <div class="override-item">Internal resistance &gt; 3× baseline</div>
+            <div class="override-item">Current spike &gt; 150A/s</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONNECTOR -->
+    <div class="connector">
+      <div class="connector-line"></div>
+      <div class="connector-arrow"></div>
+      <div class="connector-label">diagnostic output</div>
+    </div>
+
+    <!-- LAYER 5: OUTPUT -->
+    <div class="layer">
+      <div class="layer-label">Layer 5 — Diagnostic Outputs</div>
+      <div class="section-box output">
+        <div class="section-title">
+          <span class="dot dot-orange"></span>
+          Actions &amp; Outputs by Phase
+        </div>
+        <div class="output-grid">
+          <div class="output-card preflight">
+            <div class="oc-title">Pre-Flight Checks</div>
+            <div class="output-item">Cell imbalance verification (BMS)</div>
+            <div class="output-item">Internal resistance vs baseline</div>
+            <div class="output-item">Min cell voltage &gt; 3.8V check</div>
+            <div class="output-item">Battery temp 10–40°C check</div>
+            <div class="output-item">FC voltage stability test</div>
+            <div class="output-item">Estimated flight time from Wh</div>
+            <div class="output-item">GO / NO-GO recommendation</div>
+          </div>
+          <div class="output-card inflight">
+            <div class="oc-title">In-Flight Monitoring</div>
+            <div class="output-item">Weakest cell real-time tracking</div>
+            <div class="output-item">Voltage sag during throttle events</div>
+            <div class="output-item">C-rate stress alerts</div>
+            <div class="output-item">Discharge acceleration anomaly</div>
+            <div class="output-item">Temp rise rate (not just absolute)</div>
+            <div class="output-item">RTL trigger on energy threshold</div>
+            <div class="output-item">Live health score (0–100)</div>
+          </div>
+          <div class="output-card postflt">
+            <div class="oc-title">Post-Flight Analysis</div>
+            <div class="output-item">Resistance trend across flights</div>
+            <div class="output-item">Capacity fade curve</div>
+            <div class="output-item">Sag-per-C-rate degradation fingerprint</div>
+            <div class="output-item">Battery cycle count estimation</div>
+            <div class="output-item">Predicted remaining battery life</div>
+            <div class="output-item">Maintenance action flag</div>
+            <div class="output-item">Flight-over-flight health delta</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- LEGEND -->
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:var(--ok)"></div> BMS / Cell Layer</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div> Pack / BAT Layer</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div> System / MCU Layer</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--yellow)"></div> Scoring Engine</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--warn)"></div> Diagnostic Output</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--crit)"></div> Critical / Override</div>
+  </div>
+
+</div>
+</body>
+</html>
