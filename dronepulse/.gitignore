@@ -1,0 +1,13 @@
+# Local Go installation
+go/
+gopath/
+
+# PlatformIO
+.pio/
+lib/mavlink/
+
+# Build artifacts
+server/gateway/gateway.exe
+
+# Environment
+.env

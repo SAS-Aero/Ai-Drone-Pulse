@@ -1,6 +1,6 @@
 import React from 'react'
 import { NavLink } from 'react-router-dom'
-import { Crosshair, LayoutGrid, Bell, Map, Radio } from 'lucide-react'
+import { Crosshair, LayoutGrid, Bell, Map, Radio, ScrollText, Flame, BatteryFull, Activity } from 'lucide-react'
 import useDroneStore from '../store/useDroneStore'
 
 export default function Sidebar() {
@@ -46,6 +46,38 @@ export default function Sidebar() {
         title="Map"
       >
         <Map size={20} />
+      </NavLink>
+
+      <NavLink
+        to="/logs"
+        className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}
+        title="Flight Logs"
+      >
+        <ScrollText size={20} />
+      </NavLink>
+
+      <NavLink
+        to="/heatmap"
+        className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}
+        title="Activity Heatmap"
+      >
+        <Flame size={20} />
+      </NavLink>
+
+      <NavLink
+        to="/battery"
+        className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}
+        title="Battery Health"
+      >
+        <BatteryFull size={20} />
+      </NavLink>
+
+      <NavLink
+        to="/vibration"
+        className={({ isActive }) => `sidebar-link${isActive ? ' active' : ''}`}
+        title="Vibration Monitor"
+      >
+        <Activity size={20} />
       </NavLink>
 
       {/* Separator */}

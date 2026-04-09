@@ -5,8 +5,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -52,14 +54,42 @@ type PostTelemetryRequest struct {
 	Packets []PostPacket `json:"packets"`
 }
 
+// VibeNode holds a single arm's X/Y/Z accelerometer reading (m/s²).
+type VibeNode struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+}
+
+// VibeNodesData is the data payload for VIBE_NODES packets.
+type VibeNodesData struct {
+	N1 VibeNode `json:"n1"`
+	N2 VibeNode `json:"n2"`
+	N3 VibeNode `json:"n3"`
+	N4 VibeNode `json:"n4"`
+}
+
+// VibeRecord is one timestamped VIBE_NODES sample stored in memory.
+type VibeRecord struct {
+	DroneID string    `json:"drone_id"`
+	Ts      int64     `json:"ts"`
+	WallTs  time.Time `json:"wall_ts"`
+	N1      VibeNode  `json:"n1"`
+	N2      VibeNode  `json:"n2"`
+	N3      VibeNode  `json:"n3"`
+	N4      VibeNode  `json:"n4"`
+}
+
 // ─── Hub ─────────────────────────────────────────────────────────────────────
 
 type Hub struct {
-	mu         sync.RWMutex
-	drones     map[string]*websocket.Conn
-	stats      map[string]*DroneStats
-	buffer     map[string][]Packet
-	dashboards map[*websocket.Conn]struct{}
+	mu          sync.RWMutex
+	drones      map[string]*websocket.Conn
+	stats       map[string]*DroneStats
+	buffer      map[string][]Packet
+	vibeBuffer  map[string][]VibeRecord
+	dashboards  map[*websocket.Conn]struct{}
+	droneState  map[string]map[string]json.RawMessage // per-drone latest telemetry by msg type
 }
 
 func newHub() *Hub {
@@ -67,7 +97,9 @@ func newHub() *Hub {
 		drones:     make(map[string]*websocket.Conn),
 		stats:      make(map[string]*DroneStats),
 		buffer:     make(map[string][]Packet),
+		vibeBuffer: make(map[string][]VibeRecord),
 		dashboards: make(map[*websocket.Conn]struct{}),
+		droneState: make(map[string]map[string]json.RawMessage),
 	}
 }
 
@@ -120,6 +152,291 @@ func (h *Hub) snapshot() map[string]any {
 		"event":            "snapshot",
 		"drones":           statsList,
 		"connected_drones": h.connectedDroneIDs(),
+	}
+}
+
+// updateDroneState caches the latest raw data for each telemetry message type.
+func (h *Hub) updateDroneState(droneID, msgType string, data json.RawMessage) {
+	h.mu.Lock()
+	if h.droneState[droneID] == nil {
+		h.droneState[droneID] = make(map[string]json.RawMessage)
+	}
+	h.droneState[droneID][msgType] = data
+	h.mu.Unlock()
+}
+
+// ─── Local Scoring Engine ─────────────────────────────────────────────────────
+
+func clamp(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func getFloat(raw json.RawMessage, key string) (float64, bool) {
+	var m map[string]json.Number
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return 0, false
+	}
+	n, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	f, err := n.Float64()
+	return f, err == nil
+}
+
+// scorePwr rates battery power health using SYS_STATUS.
+func scorePwr(state map[string]json.RawMessage) float64 {
+	raw, ok := state["SYS_STATUS"]
+	if !ok {
+		return 50
+	}
+	score := 100.0
+	if rem, ok := getFloat(raw, "battery_remaining"); ok && rem >= 0 {
+		if rem < 20 {
+			score -= (20 - rem) * 3
+		} else if rem < 40 {
+			score -= (40 - rem) * 0.5
+		}
+	}
+	if vmv, ok := getFloat(raw, "voltage_battery"); ok && vmv > 0 {
+		v := vmv / 1000.0
+		if v < 14.0 {
+			score -= math.Min((14.0-v)*20, 40)
+		} else if v < 14.8 {
+			score -= (14.8 - v) * 10
+		}
+	}
+	return clamp(score, 0, 100)
+}
+
+// scoreIMU rates IMU health using SCALED_IMU.
+func scoreIMU(state map[string]json.RawMessage) float64 {
+	raw, ok := state["SCALED_IMU"]
+	if !ok {
+		return 50
+	}
+	score := 100.0
+	if zacc, ok := getFloat(raw, "zacc"); ok {
+		// zacc should be close to -1000 (mg) at rest
+		if d := math.Abs(zacc + 1000); d > 150 {
+			score -= math.Min(d/15, 40)
+		}
+	}
+	return clamp(score, 0, 100)
+}
+
+// scoreEKF rates EKF health using EKF_STATUS_REPORT.
+func scoreEKF(state map[string]json.RawMessage) float64 {
+	raw, ok := state["EKF_STATUS_REPORT"]
+	if !ok {
+		return 50
+	}
+	score := 100.0
+	for _, pair := range []struct {
+		key    string
+		weight float64
+	}{
+		{"velocity_variance", 30}, {"pos_horiz_variance", 20},
+		{"pos_vert_variance", 15}, {"compass_variance", 15},
+	} {
+		if v, ok := getFloat(raw, pair.key); ok && v > 0.5 {
+			score -= math.Min((v-0.5)*pair.weight, pair.weight)
+		}
+	}
+	return clamp(score, 0, 100)
+}
+
+// scoreGPS rates GPS health using GPS_RAW_INT.
+func scoreGPS(state map[string]json.RawMessage) float64 {
+	raw, ok := state["GPS_RAW_INT"]
+	if !ok {
+		return 50
+	}
+	score := 100.0
+	if ft, ok := getFloat(raw, "fix_type"); ok {
+		penalties := map[int]float64{0: 60, 1: 50, 2: 30, 3: 0, 4: 0, 5: 0, 6: 0}
+		if p, exists := penalties[int(ft)]; exists {
+			score -= p
+		}
+	}
+	if sats, ok := getFloat(raw, "satellites_visible"); ok {
+		if sats < 6 {
+			score -= (6 - sats) * 8
+		} else if sats < 10 {
+			score -= (10 - sats) * 2
+		}
+	}
+	if eph, ok := getFloat(raw, "eph"); ok {
+		hdop := eph / 100.0
+		if hdop > 3.0 {
+			score -= math.Min((hdop-3.0)*5, 20)
+		}
+	}
+	return clamp(score, 0, 100)
+}
+
+// scoreCTL rates control stability using ATTITUDE.
+func scoreCTL(state map[string]json.RawMessage) float64 {
+	raw, ok := state["ATTITUDE"]
+	if !ok {
+		return 50
+	}
+	score := 100.0
+	for _, axis := range []string{"roll", "pitch"} {
+		if v, ok := getFloat(raw, axis); ok {
+			abs := math.Abs(v)
+			if abs > 0.5 {
+				score -= math.Min((abs-0.5)*30, 30)
+			}
+		}
+	}
+	return clamp(score, 0, 100)
+}
+
+// scoreMOT rates motor/prop health using VIBE_NODES vibration data.
+func scoreMOT(state map[string]json.RawMessage) float64 {
+	raw, ok := state["VIBE_NODES"]
+	if !ok {
+		// Fall back to RC_CHANNELS_RAW if no vibration data yet
+		if rcRaw, ok2 := state["RC_CHANNELS_RAW"]; ok2 {
+			_ = rcRaw
+		}
+		return 50
+	}
+	var nodes []struct{ X, Y, Z float64 }
+	var m map[string]struct {
+		X float64 `json:"x"`
+		Y float64 `json:"y"`
+		Z float64 `json:"z"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return 50
+	}
+	for _, key := range []string{"n1", "n2", "n3", "n4"} {
+		if n, ok := m[key]; ok {
+			nodes = append(nodes, struct{ X, Y, Z float64 }{n.X, n.Y, n.Z})
+		}
+	}
+	if len(nodes) == 0 {
+		return 50
+	}
+	mags := make([]float64, len(nodes))
+	for i, n := range nodes {
+		mags[i] = math.Sqrt(n.X*n.X + n.Y*n.Y + n.Z*n.Z)
+	}
+	avg := 0.0
+	for _, m := range mags {
+		avg += m
+	}
+	avg /= float64(len(mags))
+	maxM, minM := mags[0], mags[0]
+	for _, m := range mags[1:] {
+		if m > maxM {
+			maxM = m
+		}
+		if m < minM {
+			minM = m
+		}
+	}
+	score := 100.0
+	if excess := avg - 12; excess > 0 {
+		score -= math.Min(excess*3, 40)
+	}
+	asym := 0.0
+	if avg > 0.1 {
+		asym = (maxM - minM) / avg
+	}
+	if asym > 0.2 {
+		score -= math.Min((asym-0.2)*50, 30)
+	}
+	if maxM > 25 {
+		score -= math.Min((maxM-25)*2, 30)
+	}
+	return clamp(score, 0, 100)
+}
+
+// scoreCOM rates comms health using SYS_STATUS drop rate and last-seen time.
+func scoreCOM(state map[string]json.RawMessage, lastSeen time.Time) float64 {
+	score := 100.0
+	if raw, ok := state["SYS_STATUS"]; ok {
+		if dr, ok := getFloat(raw, "drop_rate_comm"); ok {
+			pct := dr / 100.0
+			if pct > 1 {
+				score -= math.Min(pct*5, 40)
+			}
+		}
+	}
+	if !lastSeen.IsZero() {
+		age := time.Since(lastSeen).Seconds()
+		if age > 5 {
+			score -= math.Min((age-5)*5, 30)
+		}
+	}
+	return clamp(score, 0, 100)
+}
+
+func (h *Hub) computeAndBroadcastScores() {
+	h.mu.RLock()
+	droneIDs := make([]string, 0, len(h.stats))
+	for id := range h.stats {
+		droneIDs = append(droneIDs, id)
+	}
+	h.mu.RUnlock()
+
+	for _, droneID := range droneIDs {
+		h.mu.RLock()
+		st := h.droneState[droneID]
+		var lastSeen time.Time
+		if s, ok := h.stats[droneID]; ok {
+			lastSeen = s.LastSeen
+		}
+		h.mu.RUnlock()
+
+		if st == nil {
+			continue
+		}
+
+		pwr := scorePwr(st)
+		imu := scoreIMU(st)
+		ekf := scoreEKF(st)
+		gps := scoreGPS(st)
+		ctl := scoreCTL(st)
+		mot := scoreMOT(st)
+		com := scoreCOM(st, lastSeen)
+		composite := math.Round(pwr*0.20+imu*0.10+ekf*0.20+gps*0.15+ctl*0.10+mot*0.15+com*0.10)
+
+		scores := map[string]any{
+			"pwr":       math.Round(pwr*100) / 100,
+			"imu":       math.Round(imu*100) / 100,
+			"ekf":       math.Round(ekf*100) / 100,
+			"gps":       math.Round(gps*100) / 100,
+			"ctl":       math.Round(ctl*100) / 100,
+			"mot":       math.Round(mot*100) / 100,
+			"com":       math.Round(com*100) / 100,
+			"composite": composite,
+		}
+
+		h.broadcastToDashboards(map[string]any{
+			"event":    "HEALTH_SCORES",
+			"drone_id": droneID,
+			"scores":   scores,
+		})
+		log.Printf("[scoring] %s: pwr=%.0f imu=%.0f ekf=%.0f gps=%.0f ctl=%.0f mot=%.0f com=%.0f composite=%.0f",
+			droneID, pwr, imu, ekf, gps, ctl, mot, com, composite)
+	}
+}
+
+func (h *Hub) runLocalScoring() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.computeAndBroadcastScores()
 	}
 }
 
@@ -272,6 +589,9 @@ func droneWSHandler(hub *Hub, apiKey string) http.HandlerFunc {
 			hub.buffer[droneID] = buf
 			hub.mu.Unlock()
 
+			// Update per-drone telemetry state for local scoring
+			hub.updateDroneState(droneID, pkt.Type, pkt.Data)
+
 			hub.broadcastToDashboards(map[string]any{
 				"event":    "telemetry",
 				"drone_id": droneID,
@@ -376,6 +696,9 @@ func postTelemetryHandler(hub *Hub, apiKey string) http.HandlerFunc {
 			hub.buffer[droneID] = buf
 			hub.mu.Unlock()
 
+			// Update per-drone telemetry state for local scoring
+			hub.updateDroneState(droneID, pkt.Type, pkt.Data)
+
 			// Broadcast to dashboard clients (same envelope as WS handler).
 			hub.broadcastToDashboards(map[string]any{
 				"event":    "telemetry",
@@ -393,6 +716,29 @@ func postTelemetryHandler(hub *Hub, apiKey string) http.HandlerFunc {
 			})
 			if err == nil {
 				pushToStream(ctx, droneID, raw)
+			}
+
+			// VIBE_NODES: store in the in-memory vibration ring buffer.
+			if pp.Type == "VIBE_NODES" {
+				var vd VibeNodesData
+				if err := json.Unmarshal(pp.Data, &vd); err == nil {
+					rec := VibeRecord{
+						DroneID: droneID,
+						Ts:      pp.Ts,
+						WallTs:  now,
+						N1:      vd.N1,
+						N2:      vd.N2,
+						N3:      vd.N3,
+						N4:      vd.N4,
+					}
+					hub.mu.Lock()
+					vbuf := append(hub.vibeBuffer[droneID], rec)
+					if len(vbuf) > 500 {
+						vbuf = vbuf[len(vbuf)-500:]
+					}
+					hub.vibeBuffer[droneID] = vbuf
+					hub.mu.Unlock()
+				}
 			}
 
 			processed++
@@ -444,6 +790,43 @@ func telemetryAPIHandler(hub *Hub) http.HandlerFunc {
 	}
 }
 
+// vibrationAPIHandler serves GET /api/vibration?drone_id=&from=&to=
+// from/to are optional unix millisecond timestamps for time-range filtering.
+func vibrationAPIHandler(hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		droneID := r.URL.Query().Get("drone_id")
+		if droneID == "" {
+			http.Error(w, `{"error":"missing drone_id"}`, http.StatusBadRequest)
+			return
+		}
+
+		fromMs, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+		toMs, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+
+		hub.mu.RLock()
+		all := hub.vibeBuffer[droneID]
+		hub.mu.RUnlock()
+
+		filtered := make([]VibeRecord, 0, len(all))
+		for _, rec := range all {
+			wt := rec.WallTs.UnixMilli()
+			if fromMs > 0 && wt < fromMs {
+				continue
+			}
+			if toMs > 0 && wt > toMs {
+				continue
+			}
+			filtered = append(filtered, rec)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"drone_id": droneID,
+			"records":  filtered,
+		})
+	}
+}
+
 func dashboardPageHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
 	w.Write(dashboardHTML)
@@ -488,6 +871,9 @@ func main() {
 		startScoresSubscriber(context.Background(), hub)
 	}
 
+	// Start local scoring engine (runs even without Redis)
+	go hub.runLocalScoring()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/drone/ws", droneWSHandler(hub, apiKey))
@@ -495,6 +881,7 @@ func main() {
 	mux.HandleFunc("/dashboard/ws", dashboardWSHandler(hub))
 	mux.HandleFunc("/api/drones", dronesAPIHandler(hub))
 	mux.HandleFunc("/api/telemetry", telemetryAPIHandler(hub))
+	mux.HandleFunc("/api/vibration", vibrationAPIHandler(hub))
 	mux.HandleFunc("/", dashboardPageHandler)
 
 	log.Printf("DronePulse gateway listening on :%s", port)

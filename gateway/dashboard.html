@@ -1,343 +1,950 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DronePulse</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DronePulse</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #05080f;
+    --surface: #0c1220;
+    --surface2: #111a2e;
+    --border: #1a2540;
+    --text: #e2e8f0;
+    --dim: #5a6a85;
+    --green: #00e676;
+    --green-dim: rgba(0,230,118,0.12);
+    --yellow: #ffab00;
+    --yellow-dim: rgba(255,171,0,0.10);
+    --red: #ff1744;
+    --red-dim: rgba(255,23,68,0.10);
+    --blue: #448aff;
+    --cyan: #18ffff;
+    --cyan-dim: rgba(24,255,255,0.08);
+    --purple: #b388ff;
+    --orange: #ff6d00;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Inter','Segoe UI',system-ui,sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; overflow-x: hidden;
+  }
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  /* ---- Header ---- */
+  header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px; height:52px;
+    background:var(--surface); border-bottom:1px solid var(--border);
+    position:sticky; top:0; z-index:100;
+  }
+  .logo { display:flex; align-items:center; gap:10px; font-size:17px; font-weight:700; letter-spacing:-0.3px; }
+  .logo svg { width:24px; height:24px; }
+  .logo span { color:var(--cyan); }
+  .header-r { display:flex; align-items:center; gap:18px; font-size:12px; color:var(--dim); }
+  .pill-ws { display:flex; align-items:center; gap:5px; padding:3px 10px; border-radius:20px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px; border:1px solid; }
+  .pill-ws.off { background:var(--red-dim); border-color:rgba(255,23,68,.2); color:var(--red); }
+  .pill-ws.on  { background:var(--green-dim); border-color:rgba(0,230,118,.2); color:var(--green); }
+  .pill-ws .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .pill-ws.on .dot { animation:pulse 2s ease infinite; }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 
-    :root {
-      --bg:        #0d0d0d;
-      --surface:   #141414;
-      --border:    #222;
-      --text:      #c9d1d9;
-      --muted:     #555;
-      --accent:    #58a6ff;
-      --green:     #3fb950;
-      --red:       #f85149;
-      --yellow:    #d29922;
-      --font:      'JetBrains Mono', monospace;
-    }
+  /* Drone selector */
+  .drone-sel {
+    background:var(--surface2); border:1px solid var(--border);
+    color:var(--text); border-radius:6px; padding:3px 10px;
+    font-size:11px; cursor:pointer; outline:none;
+  }
 
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      font-size: 12px;
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
+  /* ---- Page ---- */
+  .page { padding:16px 24px 24px; display:flex; flex-direction:column; gap:14px; }
 
-    /* ── Status bar ── */
-    #statusbar {
-      flex-shrink: 0;
-      display: flex;
-      align-items: center;
-      gap: 24px;
-      padding: 8px 16px;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-    }
-    #statusbar .logo { color: var(--accent); font-weight: 600; letter-spacing: .1em; }
-    .sb-item { display: flex; align-items: center; gap: 6px; }
-    .sb-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--muted);
-      transition: background .3s, box-shadow .3s;
-    }
-    .sb-dot.connected    { background: var(--green); box-shadow: 0 0 6px var(--green); }
-    .sb-dot.disconnected { background: var(--red); }
-    .sb-label { color: var(--muted); }
-    .sb-value { color: var(--text); }
+  /* ---- Stats strip ---- */
+  .stats { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; }
+  .st { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 14px; }
+  .st .l { font-size:9px; font-weight:600; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); }
+  .st .v { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.3; }
+  .st .s { font-size:10px; color:var(--dim); font-variant-numeric:tabular-nums; }
 
-    /* ── Body layout ── */
-    #body {
-      flex: 1;
-      display: flex;
-      overflow: hidden;
-    }
+  /* ---- Card ---- */
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+  .ch { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid var(--border); }
+  .ch h2 { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); }
+  .badge { font-size:9px; padding:2px 8px; border-radius:10px; font-weight:700; background:var(--cyan-dim); color:var(--cyan); }
+  .cb { padding:14px; }
 
-    /* ── Left panel – drone cards ── */
-    #panel-left {
-      width: 280px;
-      flex-shrink: 0;
-      border-right: 1px solid var(--border);
-      overflow-y: auto;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    #panel-left h2 {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .12em;
-      color: var(--muted);
-      margin-bottom: 2px;
-    }
+  /* ---- Health gauges ---- */
+  .health-row { display:grid; grid-template-columns:repeat(7,1fr); gap:12px; }
+  .gauge { display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .gauge-ring { position:relative; width:60px; height:60px; }
+  .gauge-ring svg { transform:rotate(-90deg); }
+  .gauge-ring circle { fill:none; stroke-width:4.5; cx:30; cy:30; r:25; }
+  .gauge-ring .trk { stroke:var(--border); }
+  .gauge-ring .fl { stroke-linecap:round; transition:stroke-dashoffset .5s ease,stroke .5s ease; }
+  .gauge-v { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .gauge-l { font-size:10px; color:var(--dim); font-weight:500; }
 
-    .drone-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 10px 12px;
-    }
-    .drone-card-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-    .online-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: var(--muted);
-      flex-shrink: 0;
-    }
-    .online-dot.online {
-      background: var(--green);
-      box-shadow: 0 0 6px var(--green);
-    }
-    .drone-id { font-weight: 600; color: var(--accent); }
-    .drone-meta { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
-    .drone-meta span { color: var(--text); }
-    .pills { display: flex; flex-wrap: wrap; gap: 4px; }
-    .pill {
-      padding: 2px 6px;
-      border-radius: 3px;
-      background: #1e2a3a;
-      color: #79c0ff;
-      font-size: 10px;
-    }
+  /* ---- Main grid ---- */
+  .main { display:grid; grid-template-columns:1fr 1.1fr 0.9fr; gap:14px; }
 
-    /* ── Right panel – packet log ── */
-    #panel-right {
-      flex: 1;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-    }
-    #log-header {
-      flex-shrink: 0;
-      display: grid;
-      grid-template-columns: 160px 100px 140px 1fr;
-      gap: 8px;
-      padding: 6px 12px;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      color: var(--muted);
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: .08em;
-    }
-    #log-body {
-      flex: 1;
-      overflow-y: auto;
-      padding: 4px 0;
-    }
-    .log-row {
-      display: grid;
-      grid-template-columns: 160px 100px 140px 1fr;
-      gap: 8px;
-      padding: 3px 12px;
-      border-bottom: 1px solid #111;
-    }
-    .log-row:hover { background: #161616; }
-    .log-ts    { color: var(--muted); }
-    .log-did   { color: var(--accent); }
-    .log-type  { color: var(--yellow); }
-    .log-data  { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ---- Nav Ball (Attitude Indicator) ---- */
+  .navball-wrap { display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .navball {
+    width:220px; height:220px; border-radius:50%;
+    position:relative; overflow:hidden;
+    border:3px solid #2a3a5a;
+    box-shadow:0 0 20px rgba(0,0,0,.5), inset 0 0 30px rgba(0,0,0,.3);
+  }
+  .navball .sky-ground {
+    position:absolute; width:300%; height:300%;
+    left:-100%; top:-100%;
+    transform-origin:center center;
+    transition:transform .12s ease;
+  }
+  .navball .sky { fill:#0d47a1; }
+  .navball .gnd { fill:#5d4037; }
+  .navball .horizon-line { stroke:#fff; stroke-width:1.5; opacity:.7; }
+  .navball .pitch-line { stroke:rgba(255,255,255,.35); stroke-width:1; }
+  .navball .pitch-text { fill:rgba(255,255,255,.4); font-size:9px; font-family:sans-serif; text-anchor:middle; }
+  .navball .overlay { position:absolute; inset:0; pointer-events:none; }
+  .navball .center-mark { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); }
+  .navball .bank-pointer {
+    position:absolute; top:6px; left:50%; transform:translateX(-50%);
+    width:0; height:0;
+    border-left:6px solid transparent; border-right:6px solid transparent;
+    border-top:8px solid var(--yellow);
+    filter:drop-shadow(0 0 3px var(--yellow));
+  }
+  .navball .roll-scale { position:absolute; inset:0; }
+  .att-vals { display:flex; gap:20px; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .att-vals b { color:var(--text); font-weight:600; }
 
-    /* scrollbar */
-    ::-webkit-scrollbar { width: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
-  </style>
+  /* Heading tape */
+  .heading-tape {
+    width:220px; height:28px;
+    background:var(--surface2); border-radius:6px;
+    position:relative; overflow:hidden;
+    margin-top:6px; border:1px solid var(--border);
+  }
+  .heading-tape .tape-inner {
+    position:absolute; top:0; height:100%;
+    display:flex; align-items:center;
+    transition:transform .12s ease; white-space:nowrap;
+  }
+  .heading-tape .tick {
+    display:inline-flex; flex-direction:column; align-items:center;
+    width:22px; font-size:9px; color:var(--dim); font-weight:600;
+  }
+  .heading-tape .tick.major { color:var(--text); font-size:10px; }
+  .heading-tape .pointer {
+    position:absolute; top:0; left:50%; transform:translateX(-50%);
+    width:2px; height:100%; background:var(--cyan);
+    box-shadow:0 0 6px var(--cyan); z-index:2;
+  }
+  .heading-tape .hdg-val {
+    position:absolute; bottom:-18px; left:50%; transform:translateX(-50%);
+    font-size:12px; font-weight:700; color:var(--cyan);
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* ---- Quad Visualization ---- */
+  .quad-wrap { display:flex; flex-direction:column; align-items:center; }
+  .quad-svg { width:100%; max-width:340px; }
+  .quad-svg .frame-line { stroke:#2a3a5a; stroke-width:3; stroke-linecap:round; }
+  .quad-svg .center-body { fill:#1a2540; stroke:#2a3a5a; stroke-width:2; }
+  .quad-svg .motor-ring { fill:none; stroke-width:2.5; transition:stroke .3s, filter .3s; }
+  .quad-svg .motor-glow { transition:opacity .3s, r .3s; }
+  .quad-svg .motor-num { font-size:14px; font-weight:700; fill:var(--text); text-anchor:middle; dominant-baseline:central; font-family:sans-serif; }
+  .quad-svg .prop { fill:none; stroke-width:1.5; opacity:.3; }
+  .quad-svg .axis-label { font-size:9px; font-weight:600; font-family:sans-serif; text-anchor:middle; font-variant-numeric:tabular-nums; }
+  .quad-svg .axis-x { fill:var(--red); }
+  .quad-svg .axis-y { fill:var(--green); }
+  .quad-svg .axis-z { fill:var(--blue); }
+  .quad-svg .mag-label { font-size:11px; font-weight:700; font-family:sans-serif; text-anchor:middle; font-variant-numeric:tabular-nums; }
+  .quad-svg .arrow-label { font-size:9px; fill:var(--dim); font-family:sans-serif; text-anchor:middle; }
+  @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+  /* ---- GPS Map ---- */
+  .map-container { height:200px; border-radius:8px; overflow:hidden; }
+  .map-container .leaflet-control-attribution { font-size:8px; }
+  .gps-bar { display:flex; align-items:center; gap:12px; margin-top:10px; }
+  .gps-badge { padding:3px 10px; border-radius:5px; font-size:11px; font-weight:700; }
+  .gps-badge.good { background:var(--green-dim); color:var(--green); }
+  .gps-badge.ok   { background:var(--yellow-dim); color:var(--yellow); }
+  .gps-badge.bad  { background:var(--red-dim); color:var(--red); }
+  .gps-info { font-size:11px; color:var(--dim); display:flex; gap:12px; }
+  .gps-info b { color:var(--text); font-weight:600; }
+
+  /* ---- Battery ---- */
+  .bat-row { display:flex; align-items:center; gap:14px; }
+  .bat-shell { width:60px; height:28px; border:2px solid var(--dim); border-radius:4px; position:relative; overflow:hidden; }
+  .bat-shell::after { content:''; position:absolute; right:-6px; top:7px; width:4px; height:10px; background:var(--dim); border-radius:0 2px 2px 0; }
+  .bat-fill { height:100%; transition:width .4s,background .4s; border-radius:2px; }
+  .bat-text .pct { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .bat-text .det { font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+
+  /* ---- Alerts ---- */
+  .alerts-scroll { max-height:200px; overflow-y:auto; display:flex; flex-direction:column; gap:5px; }
+  .alr { display:flex; gap:8px; padding:8px 10px; border-radius:6px; font-size:12px; }
+  .alr.warning  { background:var(--yellow-dim); }
+  .alr.critical { background:var(--red-dim); }
+  .alr-icon { width:16px; height:16px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; flex-shrink:0; }
+  .alr.warning  .alr-icon { background:var(--yellow); color:#000; }
+  .alr.critical .alr-icon { background:var(--red); color:#fff; }
+  .alr-msg { font-weight:500; }
+  .alr.warning  .alr-msg { color:var(--yellow); }
+  .alr.critical .alr-msg { color:var(--red); }
+  .alr-time { font-size:10px; color:var(--dim); }
+  .empty { text-align:center; padding:24px; color:var(--dim); font-size:12px; }
+
+  /* ---- Msg pills ---- */
+  .mpills { display:flex; flex-wrap:wrap; gap:5px; }
+  .mp { padding:4px 8px; background:var(--surface2); border-radius:6px; font-size:10px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .mp .c { color:var(--dim); margin-left:4px; }
+
+  /* ---- Drone cards (fleet strip) ---- */
+  .fleet-strip { display:flex; gap:10px; overflow-x:auto; padding-bottom:4px; }
+  .drone-card {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:8px; padding:8px 12px; min-width:160px;
+    cursor:pointer; transition:border-color .2s;
+  }
+  .drone-card.active { border-color:var(--cyan); }
+  .drone-card .dc-id { font-size:12px; font-weight:700; color:var(--cyan); }
+  .drone-card .dc-dot { width:7px; height:7px; border-radius:50%; background:var(--dim); display:inline-block; margin-right:6px; }
+  .drone-card .dc-dot.online { background:var(--green); box-shadow:0 0 5px var(--green); }
+  .drone-card .dc-msgs { font-size:10px; color:var(--dim); margin-top:4px; }
+
+  /* ---- Log ---- */
+  .log-s { max-height:180px; overflow-y:auto; font-family:'Cascadia Code','JetBrains Mono','Fira Code',monospace; font-size:11px; line-height:1.7; }
+  .ll { display:flex; gap:8px; padding:1px 0; border-bottom:1px solid rgba(255,255,255,.02); }
+  .ll .t  { color:var(--dim); min-width:65px; }
+  .ll .tp { min-width:160px; font-weight:600; color:var(--cyan); }
+  .ll .did { min-width:80px; color:var(--purple); font-size:10px; }
+  .ll .d  { color:#3d4f6a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* ---- Scrollbar ---- */
+  ::-webkit-scrollbar{width:5px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+  /* ---- Responsive ---- */
+  @media(max-width:1100px){
+    .stats{grid-template-columns:repeat(3,1fr)}
+    .main{grid-template-columns:1fr 1fr}
+    .health-row{grid-template-columns:repeat(4,1fr)}
+  }
+  @media(max-width:700px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .main{grid-template-columns:1fr}
+    .health-row{grid-template-columns:repeat(2,1fr)}
+  }
+</style>
 </head>
 <body>
 
-<!-- Status bar -->
-<div id="statusbar">
-  <span class="logo">▶ DRONEPULSE</span>
-  <div class="sb-item">
-    <div class="sb-dot" id="ws-dot"></div>
-    <span class="sb-label">WS</span>
-    <span class="sb-value" id="ws-state">CONNECTING</span>
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M12 2L2 7l10 5 10-5-10-5z" stroke="var(--cyan)"/>
+      <path d="M2 17l10 5 10-5" stroke="var(--cyan)" opacity=".4"/>
+      <path d="M2 12l10 5 10-5" stroke="var(--cyan)" opacity=".7"/>
+    </svg>
+    Drone<span>Pulse</span>
   </div>
-  <div class="sb-item">
-    <span class="sb-label">PACKETS</span>
-    <span class="sb-value" id="pkt-count">0</span>
+  <div class="header-r">
+    <div class="pill-ws off" id="pill"><div class="dot"></div><span id="pillTxt">OFFLINE</span></div>
+    <select class="drone-sel" id="droneSel"><option value="">— no drones —</option></select>
+    <span style="font-variant-numeric:tabular-nums" id="uptime">00:00:00</span>
   </div>
-  <div class="sb-item">
-    <span class="sb-label">DRONES ONLINE</span>
-    <span class="sb-value" id="drones-online">0</span>
-  </div>
-</div>
+</header>
 
-<!-- Body -->
-<div id="body">
+<div class="page">
 
-  <!-- Left: drone cards -->
-  <div id="panel-left">
-    <h2>Drones</h2>
-    <div id="drone-list"><span style="color:var(--muted)">No drones yet.</span></div>
+  <!-- Fleet strip (multi-drone) -->
+  <div class="fleet-strip" id="fleetStrip" style="display:none"></div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="st"><div class="l">Altitude</div><div class="v" id="s-alt">--</div><div class="s">meters AGL</div></div>
+    <div class="st"><div class="l">Speed</div><div class="v" id="s-spd">--</div><div class="s">m/s ground</div></div>
+    <div class="st"><div class="l">Heading</div><div class="v" id="s-hdg">--</div><div class="s">degrees</div></div>
+    <div class="st"><div class="l">Throttle</div><div class="v" id="s-thr">--</div><div class="s">percent</div></div>
+    <div class="st"><div class="l">Flight Mode</div><div class="v" id="s-mode">--</div><div class="s" id="s-stat">--</div></div>
+    <div class="st"><div class="l">Packets/s</div><div class="v" id="s-pps">0</div><div class="s" id="s-tot">0 total</div></div>
   </div>
 
-  <!-- Right: packet log -->
-  <div id="panel-right">
-    <div id="log-header">
-      <span>Timestamp</span>
-      <span>Drone</span>
-      <span>Msg Type</span>
-      <span>Data</span>
+  <!-- Health -->
+  <div class="card">
+    <div class="ch"><h2>Health Scores</h2><div class="badge" id="hBadge">WAITING</div></div>
+    <div class="cb"><div class="health-row" id="hRow"></div></div>
+  </div>
+
+  <!-- Main 3-col -->
+  <div class="main">
+
+    <!-- Col 1: Attitude + GPS -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card">
+        <div class="ch"><h2>Attitude Indicator</h2></div>
+        <div class="cb">
+          <div class="navball-wrap">
+            <div class="navball" id="navball">
+              <svg class="sky-ground" id="skyGnd" viewBox="-330 -330 660 660" preserveAspectRatio="xMidYMid meet">
+                <rect class="sky" x="-330" y="-330" width="660" height="330"/>
+                <rect class="gnd" x="-330" y="0" width="660" height="330"/>
+                <line class="horizon-line" x1="-330" y1="0" x2="330" y2="0"/>
+                <line class="pitch-line" x1="-40" y1="-33" x2="40" y2="-33"/>
+                <text class="pitch-text" x="52" y="-30">10</text>
+                <line class="pitch-line" x1="-60" y1="-66" x2="60" y2="-66"/>
+                <text class="pitch-text" x="72" y="-63">20</text>
+                <line class="pitch-line" x1="-40" y1="-99" x2="40" y2="-99"/>
+                <text class="pitch-text" x="52" y="-96">30</text>
+                <line class="pitch-line" x1="-40" y1="33" x2="40" y2="33"/>
+                <text class="pitch-text" x="55" y="36">-10</text>
+                <line class="pitch-line" x1="-60" y1="66" x2="60" y2="66"/>
+                <text class="pitch-text" x="75" y="69">-20</text>
+                <line class="pitch-line" x1="-40" y1="99" x2="40" y2="99"/>
+                <text class="pitch-text" x="55" y="102">-30</text>
+                <line class="pitch-line" x1="-20" y1="-16.5" x2="20" y2="-16.5"/>
+                <line class="pitch-line" x1="-20" y1="16.5" x2="20" y2="16.5"/>
+                <line class="pitch-line" x1="-20" y1="-49.5" x2="20" y2="-49.5"/>
+                <line class="pitch-line" x1="-20" y1="49.5" x2="20" y2="49.5"/>
+              </svg>
+              <div class="overlay">
+                <svg class="center-mark" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:80px;height:30px" viewBox="0 0 80 30">
+                  <line x1="0" y1="15" x2="28" y2="15" stroke="#ffab00" stroke-width="2.5"/>
+                  <line x1="52" y1="15" x2="80" y2="15" stroke="#ffab00" stroke-width="2.5"/>
+                  <line x1="28" y1="15" x2="35" y2="22" stroke="#ffab00" stroke-width="2.5"/>
+                  <line x1="52" y1="15" x2="45" y2="22" stroke="#ffab00" stroke-width="2.5"/>
+                  <circle cx="40" cy="15" r="3" fill="none" stroke="#ffab00" stroke-width="2"/>
+                </svg>
+                <svg class="roll-scale" viewBox="0 0 220 220" style="position:absolute;inset:0">
+                  <g transform="translate(110,110)">
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="2" opacity=".6"/>
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="1.5" opacity=".4" transform="rotate(10)"/>
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="1.5" opacity=".4" transform="rotate(-10)"/>
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="1.5" opacity=".4" transform="rotate(20)"/>
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="1.5" opacity=".4" transform="rotate(-20)"/>
+                    <line x1="0" y1="-105" x2="0" y2="-93" stroke="white" stroke-width="2" opacity=".6" transform="rotate(30)"/>
+                    <line x1="0" y1="-105" x2="0" y2="-93" stroke="white" stroke-width="2" opacity=".6" transform="rotate(-30)"/>
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="1.5" opacity=".4" transform="rotate(45)"/>
+                    <line x1="0" y1="-103" x2="0" y2="-95" stroke="white" stroke-width="1.5" opacity=".4" transform="rotate(-45)"/>
+                    <line x1="0" y1="-105" x2="0" y2="-93" stroke="white" stroke-width="2" opacity=".6" transform="rotate(60)"/>
+                    <line x1="0" y1="-105" x2="0" y2="-93" stroke="white" stroke-width="2" opacity=".6" transform="rotate(-60)"/>
+                  </g>
+                </svg>
+                <div class="bank-pointer"></div>
+              </div>
+            </div>
+
+            <div class="heading-tape">
+              <div class="pointer"></div>
+              <div class="tape-inner" id="headingTape"></div>
+              <div class="hdg-val" id="hdgVal">0&deg;</div>
+            </div>
+
+            <div class="att-vals" style="margin-top:10px">
+              <span>R <b id="a-r">0.0</b>&deg;</span>
+              <span>P <b id="a-p">0.0</b>&deg;</span>
+              <span>Y <b id="a-y">0.0</b>&deg;</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- GPS Map -->
+      <div class="card">
+        <div class="ch"><h2>GPS Position</h2></div>
+        <div class="cb">
+          <div class="map-container" id="map"></div>
+          <div class="gps-bar">
+            <div class="gps-badge bad" id="gBadge">No Fix</div>
+            <div class="gps-info">
+              <span>Sats: <b id="g-sat">--</b></span>
+              <span>HDOP: <b id="g-hdop">--</b></span>
+              <span>Pos: <b id="g-pos">--</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div id="log-body"></div>
+
+    <!-- Col 2: Quad motor vibration -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card" style="flex:1">
+        <div class="ch"><h2>Motor Vibration</h2><div class="badge" id="vibeStatus">WAITING</div></div>
+        <div class="cb">
+          <div class="quad-wrap">
+            <svg class="quad-svg" viewBox="0 0 360 400" id="quadSvg">
+              <defs>
+                <filter id="glow-green"><feGaussianBlur stdDeviation="6" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <filter id="glow-yellow"><feGaussianBlur stdDeviation="8" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <filter id="glow-red"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+
+              <polygon points="180,28 172,42 188,42" fill="var(--cyan)" opacity=".7"/>
+              <text class="arrow-label" x="180" y="22" fill="var(--cyan)" font-weight="600" font-size="10" text-anchor="middle">FRONT</text>
+
+              <!-- Frame arms (X config) -->
+              <line class="frame-line" x1="180" y1="180" x2="75" y2="82"/>
+              <line class="frame-line" x1="180" y1="180" x2="285" y2="82"/>
+              <line class="frame-line" x1="180" y1="180" x2="75" y2="278"/>
+              <line class="frame-line" x1="180" y1="180" x2="285" y2="278"/>
+              <rect class="center-body" x="158" y="158" width="44" height="44" rx="8"/>
+
+              <!-- Motor 1 (Front-Right) -->
+              <g id="m1g">
+                <circle class="motor-glow" id="m1glow" cx="285" cy="82" r="40" fill="var(--green)" opacity="0.06"/>
+                <circle class="prop" id="m1prop" cx="285" cy="82" r="36" stroke="var(--dim)"/>
+                <circle class="motor-ring" id="m1ring" cx="285" cy="82" r="28" stroke="var(--green)"/>
+                <text class="motor-num" x="285" y="82">1</text>
+                <text class="axis-label axis-x" id="m1x" x="285" y="118">X: --</text>
+                <text class="axis-label axis-y" id="m1y" x="285" y="129">Y: --</text>
+                <text class="axis-label axis-z" id="m1z" x="285" y="140">Z: --</text>
+                <text class="mag-label" id="m1mag" x="285" y="56" fill="var(--text)">--</text>
+              </g>
+
+              <!-- Motor 2 (Front-Left) -->
+              <g id="m2g">
+                <circle class="motor-glow" id="m2glow" cx="75" cy="82" r="40" fill="var(--green)" opacity="0.06"/>
+                <circle class="prop" id="m2prop" cx="75" cy="82" r="36" stroke="var(--dim)"/>
+                <circle class="motor-ring" id="m2ring" cx="75" cy="82" r="28" stroke="var(--green)"/>
+                <text class="motor-num" x="75" y="82">2</text>
+                <text class="axis-label axis-x" id="m2x" x="75" y="118">X: --</text>
+                <text class="axis-label axis-y" id="m2y" x="75" y="129">Y: --</text>
+                <text class="axis-label axis-z" id="m2z" x="75" y="140">Z: --</text>
+                <text class="mag-label" id="m2mag" x="75" y="56" fill="var(--text)">--</text>
+              </g>
+
+              <!-- Motor 3 (Rear-Left) -->
+              <g id="m3g">
+                <circle class="motor-glow" id="m3glow" cx="75" cy="278" r="40" fill="var(--green)" opacity="0.06"/>
+                <circle class="prop" id="m3prop" cx="75" cy="278" r="36" stroke="var(--dim)"/>
+                <circle class="motor-ring" id="m3ring" cx="75" cy="278" r="28" stroke="var(--green)"/>
+                <text class="motor-num" x="75" y="278">3</text>
+                <text class="axis-label axis-x" id="m3x" x="75" y="314">X: --</text>
+                <text class="axis-label axis-y" id="m3y" x="75" y="325">Y: --</text>
+                <text class="axis-label axis-z" id="m3z" x="75" y="336">Z: --</text>
+                <text class="mag-label" id="m3mag" x="75" y="252" fill="var(--text)">--</text>
+              </g>
+
+              <!-- Motor 4 (Rear-Right) -->
+              <g id="m4g">
+                <circle class="motor-glow" id="m4glow" cx="285" cy="278" r="40" fill="var(--green)" opacity="0.06"/>
+                <circle class="prop" id="m4prop" cx="285" cy="278" r="36" stroke="var(--dim)"/>
+                <circle class="motor-ring" id="m4ring" cx="285" cy="278" r="28" stroke="var(--green)"/>
+                <text class="motor-num" x="285" y="278">4</text>
+                <text class="axis-label axis-x" id="m4x" x="285" y="314">X: --</text>
+                <text class="axis-label axis-y" id="m4y" x="285" y="325">Y: --</text>
+                <text class="axis-label axis-z" id="m4z" x="285" y="336">Z: --</text>
+                <text class="mag-label" id="m4mag" x="285" y="252" fill="var(--text)">--</text>
+              </g>
+
+              <!-- Legend -->
+              <rect x="120" y="372" width="8" height="8" rx="1" fill="var(--red)"/>
+              <text x="132" y="380" fill="var(--dim)" font-size="9" font-family="sans-serif">X</text>
+              <rect x="148" y="372" width="8" height="8" rx="1" fill="var(--green)"/>
+              <text x="160" y="380" fill="var(--dim)" font-size="9" font-family="sans-serif">Y</text>
+              <rect x="176" y="372" width="8" height="8" rx="1" fill="var(--blue)"/>
+              <text x="188" y="380" fill="var(--dim)" font-size="9" font-family="sans-serif">Z</text>
+              <text x="210" y="380" fill="var(--dim)" font-size="9" font-family="sans-serif">m/s&sup2;</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Col 3: Battery + Alerts + Msg types -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card">
+        <div class="ch"><h2>Battery</h2></div>
+        <div class="cb">
+          <div class="bat-row">
+            <div class="bat-shell"><div class="bat-fill" id="batF" style="width:0;background:var(--dim)"></div></div>
+            <div class="bat-text">
+              <div class="pct" id="b-pct">--%</div>
+              <div class="det" id="b-det">-- V &middot; -- A</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="flex:1">
+        <div class="ch"><h2>Alerts</h2><div class="badge" id="aCnt" style="display:none">0</div></div>
+        <div class="cb">
+          <div class="alerts-scroll" id="alerts">
+            <div class="empty">All systems nominal</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch"><h2>Message Types</h2></div>
+        <div class="cb"><div class="mpills" id="mpills"></div></div>
+      </div>
+    </div>
   </div>
 
+  <!-- Log -->
+  <div class="card">
+    <div class="ch"><h2>Packet Log</h2><div class="badge" id="lRate">0 pkt/s</div></div>
+    <div class="cb" style="padding:10px 14px"><div class="log-s" id="log"></div></div>
+  </div>
 </div>
 
 <script>
-  // ── State ──────────────────────────────────────────────────────
-  const state = {
-    droneCards: {},   // drone_id → { stats, el }
-    totalPackets: 0,
+(function(){
+  // ── Constants ────────────────────────────────────────────────────────────────
+  const CIRC = 2 * Math.PI * 25;
+
+  const statusMap = {
+    0:'UNINIT',1:'BOOT',2:'CALIBRATE',3:'STANDBY',
+    4:'ACTIVE',5:'CRITICAL',6:'EMERGENCY',7:'POWEROFF',8:'FLIGHT_TERM',
+  };
+  const fixMap = {
+    0:'No GPS',1:'No Fix',2:'2D Fix',3:'3D Fix',4:'DGPS',5:'RTK Float',6:'RTK Fix',
+  };
+  const modeMap = {
+    0:'STABILIZE',1:'ACRO',2:'ALT_HOLD',3:'AUTO',4:'GUIDED',
+    5:'LOITER',6:'RTL',7:'CIRCLE',9:'LAND',16:'POSHOLD',
   };
 
-  // ── Helpers ───────────────────────────────────────────────────
-  function fmtTime(iso) {
-    const d = new Date(iso);
-    return d.toISOString().replace('T', ' ').substring(0, 23);
+  // Health subsystems — uses main project score keys from workers/local scoring
+  const subsystems = [
+    { id:'mot', label:'Motor/Prop' },
+    { id:'pwr', label:'Battery'   },
+    { id:'imu', label:'IMU'       },
+    { id:'ekf', label:'EKF'       },
+    { id:'gps', label:'GPS/Nav'   },
+    { id:'ctl', label:'Control'   },
+    { id:'com', label:'Comms'     },
+  ];
+
+  // ── State ────────────────────────────────────────────────────────────────────
+  const mc = {};               // msg type → count (active drone)
+  const droneStats = {};       // droneID → { online, msgCount, msgTypes }
+  let total = 0, mps = 0, pps = 0, alertN = 0;
+  const t0 = Date.now();
+  let activeDrone = '';        // currently selected drone ID
+
+  // ── Init health gauges ───────────────────────────────────────────────────────
+  const hRow = document.getElementById('hRow');
+  hRow.innerHTML = subsystems.map(s => `
+    <div class="gauge">
+      <div class="gauge-ring">
+        <svg width="60" height="60">
+          <circle class="trk"/>
+          <circle class="fl" id="gf-${s.id}"
+            stroke-dasharray="${CIRC}" stroke-dashoffset="${CIRC}"
+            stroke="var(--dim)"/>
+        </svg>
+        <div class="gauge-v" id="gv-${s.id}">--</div>
+      </div>
+      <div class="gauge-l">${s.label}</div>
+    </div>`).join('');
+
+  function setGauge(id, val) {
+    const f = document.getElementById('gf-' + id);
+    const v = document.getElementById('gv-' + id);
+    if (!f || !v) return;
+    const n = Math.round(val);
+    const off = CIRC - (n / 100) * CIRC;
+    const c = n >= 70 ? 'var(--green)' : n >= 40 ? 'var(--yellow)' : 'var(--red)';
+    f.setAttribute('stroke-dashoffset', off);
+    f.setAttribute('stroke', c);
+    v.textContent = n;
+    v.style.color = c;
   }
 
-  function setWsStatus(s) {
-    const dot = document.getElementById('ws-dot');
-    const lbl = document.getElementById('ws-state');
-    dot.className = 'sb-dot ' + (s === 'OPEN' ? 'connected' : 'disconnected');
-    lbl.textContent = s;
+  // ── Init heading tape ────────────────────────────────────────────────────────
+  const dirs = {0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW',360:'N'};
+  let tapeHTML = '';
+  for (let i = -90; i <= 450; i += 5) {
+    const deg = ((i % 360) + 360) % 360;
+    const isMajor = deg % 45 === 0;
+    const label = dirs[deg] || (deg % 10 === 0 ? deg : '');
+    tapeHTML += `<div class="tick${isMajor ? ' major' : ''}">${label}</div>`;
+  }
+  document.getElementById('headingTape').innerHTML = tapeHTML;
+
+  // ── Init map ─────────────────────────────────────────────────────────────────
+  const map = L.map('map', { zoomControl:false, attributionControl:true }).setView([18.5204, 73.8567], 15);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OSM &amp; Carto', maxZoom: 19,
+  }).addTo(map);
+  const droneIcon = L.divIcon({
+    html: `<svg width="28" height="28" viewBox="0 0 28 28">
+      <circle cx="14" cy="14" r="12" fill="rgba(24,255,255,.15)" stroke="var(--cyan)" stroke-width="2"/>
+      <polygon points="14,4 10,18 14,14 18,18" fill="var(--cyan)"/>
+    </svg>`,
+    iconSize:[28,28], iconAnchor:[14,14], className:'',
+  });
+  const marker = L.marker([18.5204, 73.8567], { icon:droneIcon }).addTo(map);
+  const trail  = L.polyline([], { color:'rgba(24,255,255,.4)', weight:2 }).addTo(map);
+  let trailPts = [];
+
+  // ── Fleet card helpers ───────────────────────────────────────────────────────
+  function renderFleet() {
+    const ids = Object.keys(droneStats);
+    const strip = document.getElementById('fleetStrip');
+    strip.style.display = ids.length > 1 ? 'flex' : 'none';
+    strip.innerHTML = ids.map(id => {
+      const s = droneStats[id];
+      return `<div class="drone-card${id === activeDrone ? ' active' : ''}" onclick="selectDrone('${esc(id)}')">
+        <div><span class="dc-dot${s.online ? ' online' : ''}"></span><span class="dc-id">${esc(id)}</span></div>
+        <div class="dc-msgs">${s.msgCount || 0} pkts</div>
+      </div>`;
+    }).join('');
+    // Also update selector
+    const sel = document.getElementById('droneSel');
+    sel.innerHTML = ids.map(id =>
+      `<option value="${esc(id)}"${id === activeDrone ? ' selected' : ''}>${esc(id)}</option>`
+    ).join('') || '<option value="">— no drones —</option>';
   }
 
-  // ── Drone cards ───────────────────────────────────────────────
-  function renderCard(stats) {
-    const list = document.getElementById('drone-list');
+  window.selectDrone = function(id) {
+    activeDrone = id;
+    // Reset per-drone display state
+    Object.keys(mc).forEach(k => delete mc[k]);
+    total = 0; alertN = 0;
+    document.getElementById('alerts').innerHTML = '<div class="empty">All systems nominal</div>';
+    document.getElementById('mpills').innerHTML = '';
+    document.getElementById('log').innerHTML = '';
+    subsystems.forEach(s => setGauge(s.id, 0));
+    renderFleet();
+  };
 
-    if (!state.droneCards[stats.drone_id]) {
-      // clear placeholder
-      if (list.querySelector('span')) list.innerHTML = '';
-      const el = document.createElement('div');
-      el.className = 'drone-card';
-      list.appendChild(el);
-      state.droneCards[stats.drone_id] = { el };
+  document.getElementById('droneSel').addEventListener('change', e => selectDrone(e.target.value));
+
+  // ── WebSocket ────────────────────────────────────────────────────────────────
+  let ws;
+  function connect() {
+    const p = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${p}://${location.host}/dashboard/ws`);
+    ws.onopen  = () => { setWs(true); };
+    ws.onclose = () => { setWs(false); setTimeout(connect, 2000); };
+    ws.onerror = () => ws.close();
+    ws.onmessage = e => {
+      try { dispatch(JSON.parse(e.data)); } catch (x) {}
+    };
+  }
+
+  function setWs(on) {
+    const p = document.getElementById('pill');
+    const t = document.getElementById('pillTxt');
+    p.className = 'pill-ws ' + (on ? 'on' : 'off');
+    t.textContent = on ? 'LIVE' : 'OFFLINE';
+  }
+
+  // ── Message dispatcher ───────────────────────────────────────────────────────
+  // Main gateway sends: {event, drone_id, packet: {type, data, timestamp}}
+  // Local scoring:      {event:"HEALTH_SCORES", drone_id, scores:{...}}
+  // Worker scores:      {event:"STATE_UPDATE",  drone_id, scores:{...}}
+  // Drone events:       {event:"drone_connected"|"drone_disconnected", drone_id}
+  // Snapshot:           {event:"snapshot", drones:[...]}
+
+  function dispatch(msg) {
+    const ev = msg.event;
+
+    if (ev === 'snapshot') {
+      const arr = Array.isArray(msg.drones) ? msg.drones : Object.values(msg.drones || {});
+      arr.forEach(d => {
+        const id = d.drone_id || d.id;
+        if (!id) return;
+        if (!droneStats[id]) droneStats[id] = { online: false, msgCount: 0, msgTypes: {} };
+        droneStats[id].online = d.online ?? false;
+        droneStats[id].msgCount = d.message_count || 0;
+        droneStats[id].msgTypes = d.message_types || {};
+        if (!activeDrone && id) activeDrone = id;
+      });
+      renderFleet();
+      return;
     }
 
-    const { el } = state.droneCards[stats.drone_id];
-    const msgTypes = stats.message_types || {};
-    const pills = Object.entries(msgTypes)
-      .sort((a, b) => b[1] - a[1])
-      .map(([t, c]) => `<span class="pill">${t} ${c}</span>`)
-      .join('');
+    if (ev === 'drone_connected') {
+      const id = msg.drone_id;
+      if (!id) return;
+      if (!droneStats[id]) droneStats[id] = { online: true, msgCount: 0, msgTypes: {} };
+      droneStats[id].online = true;
+      if (!activeDrone) activeDrone = id;
+      renderFleet();
+      return;
+    }
 
-    el.innerHTML = `
-      <div class="drone-card-header">
-        <div class="online-dot ${stats.online ? 'online' : ''}"></div>
-        <span class="drone-id">${stats.drone_id}</span>
-      </div>
-      <div class="drone-meta">msgs <span>${stats.message_count}</span> &nbsp;|&nbsp; last seen <span>${stats.last_seen ? fmtTime(stats.last_seen) : '—'}</span></div>
-      <div class="pills">${pills || '<span style="color:var(--muted)">no messages yet</span>'}</div>
-    `;
+    if (ev === 'drone_disconnected') {
+      const id = msg.drone_id;
+      if (!id) return;
+      if (droneStats[id]) droneStats[id].online = false;
+      renderFleet();
+      return;
+    }
 
-    // update online count
-    const online = Object.values(state.droneCards)
-      .filter(c => c.el.querySelector('.online-dot.online')).length;
-    document.getElementById('drones-online').textContent = online;
-  }
+    if (ev === 'HEALTH_SCORES' || ev === 'STATE_UPDATE') {
+      const id = msg.drone_id;
+      if (!id || id !== activeDrone) return;
+      updateScores(msg.scores || {});
+      return;
+    }
 
-  // ── Packet log ────────────────────────────────────────────────
-  const LOG_MAX = 300;
-  function appendLog(droneId, pkt) {
-    const body = document.getElementById('log-body');
-    const row = document.createElement('div');
-    row.className = 'log-row';
-    const snippet = JSON.stringify(pkt.data ?? {}).substring(0, 100);
-    row.innerHTML = `
-      <span class="log-ts">${fmtTime(pkt.timestamp)}</span>
-      <span class="log-did">${droneId}</span>
-      <span class="log-type">${pkt.type}</span>
-      <span class="log-data">${snippet}</span>
-    `;
-    body.prepend(row);
-    while (body.children.length > LOG_MAX) body.removeChild(body.lastChild);
+    if (ev === 'telemetry') {
+      const id = msg.drone_id;
+      const pkt = msg.packet || {};
+      if (!id || !pkt.type) return;
 
-    state.totalPackets++;
-    document.getElementById('pkt-count').textContent = state.totalPackets;
-  }
+      // Update fleet stats
+      if (!droneStats[id]) droneStats[id] = { online: true, msgCount: 0, msgTypes: {} };
+      droneStats[id].msgCount++;
+      droneStats[id].msgTypes[pkt.type] = (droneStats[id].msgTypes[pkt.type] || 0) + 1;
+      droneStats[id].online = true;
 
-  // ── WebSocket ─────────────────────────────────────────────────
-  function connect() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/dashboard/ws`);
-
-    ws.onopen = () => setWsStatus('OPEN');
-
-    ws.onclose = () => {
-      setWsStatus('CLOSED');
-      setTimeout(connect, 3000);
-    };
-
-    ws.onerror = () => ws.close();
-
-    ws.onmessage = ({ data }) => {
-      let msg;
-      try { msg = JSON.parse(data); } catch { return; }
-
-      switch (msg.event) {
-        case 'snapshot':
-          (msg.drones || []).forEach(renderCard);
-          break;
-
-        case 'drone_connected':
-        case 'drone_disconnected': {
-          // re-fetch or just toggle – we'll get updated stats on next telemetry
-          // For immediate feedback update the card if it exists
-          const card = state.droneCards[msg.drone_id];
-          if (card) {
-            const dot = card.el.querySelector('.online-dot');
-            if (dot) dot.classList.toggle('online', msg.event === 'drone_connected');
-          }
-          const online = Object.values(state.droneCards)
-            .filter(c => c.el.querySelector('.online-dot.online')).length;
-          document.getElementById('drones-online').textContent = online;
-          break;
-        }
-
-        case 'telemetry':
-          if (msg.packet) appendLog(msg.drone_id, msg.packet);
-          // refresh card stats via /api/drones
-          fetchAndRenderStats();
-          break;
+      // Only render telemetry for the active drone
+      if (id === activeDrone) {
+        mc[pkt.type] = (mc[pkt.type] || 0) + 1;
+        total++; mps++;
+        addLog(id, pkt);
+        handleTelemetry(pkt.type, pkt.data || {}, pkt);
       }
-    };
+      return;
+    }
   }
 
-  // ── Periodic stats refresh ────────────────────────────────────
-  let fetchTimeout = null;
-  function fetchAndRenderStats() {
-    clearTimeout(fetchTimeout);
-    fetchTimeout = setTimeout(() => {
-      fetch('/api/drones')
-        .then(r => r.json())
-        .then(d => (d.stats || []).forEach(renderCard))
-        .catch(() => {});
-    }, 500);  // debounce rapid packets
+  // ── Telemetry handler ────────────────────────────────────────────────────────
+  function handleTelemetry(type, data, pkt) {
+    switch (type) {
+      case 'VFR_HUD':
+        txt('s-alt', f(data.alt, 1));
+        txt('s-spd', f(data.groundspeed, 1));
+        txt('s-hdg', (data.heading ?? '--') + '\u00B0');
+        txt('s-thr', (data.throttle ?? '--') + '%');
+        if (data.heading != null) updateHeading(data.heading);
+        break;
+
+      case 'ATTITUDE': {
+        const roll  = r2d(data.roll  || 0);
+        const pitch = r2d(data.pitch || 0);
+        const yaw   = r2d(data.yaw   || 0);
+        txt('a-r', f(roll, 1));
+        txt('a-p', f(pitch, 1));
+        txt('a-y', f(yaw < 0 ? yaw + 360 : yaw, 1));
+        const sg = document.getElementById('skyGnd');
+        if (sg) sg.style.transform = `rotate(${-roll}deg) translateY(${pitch * 3.3}px)`;
+        break;
+      }
+
+      case 'SYS_STATUS': {
+        const v   = data.voltage_battery / 1000;
+        const pct = data.battery_remaining;
+        const cur = data.current_battery / 100;
+        txt('b-pct', pct + '%');
+        txt('b-det', f(v, 2) + ' V \u00B7 ' + f(cur, 1) + ' A');
+        const bf = document.getElementById('batF');
+        if (bf) {
+          bf.style.width = pct + '%';
+          bf.style.background = pct > 40 ? 'var(--green)' : pct > 20 ? 'var(--yellow)' : 'var(--red)';
+        }
+        break;
+      }
+
+      case 'BATTERY_STATUS': {
+        // ArduPilot also sends BATTERY_STATUS — supplement SYS_STATUS
+        if (Array.isArray(data.voltages) && data.voltages.length) {
+          const mv  = data.voltages[0];
+          const pct = data.battery_remaining;
+          const cur = data.current_battery / 100;
+          if (pct >= 0) {
+            txt('b-pct', pct + '%');
+            txt('b-det', f(mv / 1000, 2) + ' V \u00B7 ' + f(cur, 1) + ' A');
+            const bf = document.getElementById('batF');
+            if (bf) {
+              bf.style.width = pct + '%';
+              bf.style.background = pct > 40 ? 'var(--green)' : pct > 20 ? 'var(--yellow)' : 'var(--red)';
+            }
+          }
+        }
+        break;
+      }
+
+      case 'GPS_RAW_INT': {
+        const gb = document.getElementById('gBadge');
+        const ft = fixMap[data.fix_type] || '?';
+        if (gb) {
+          gb.textContent = ft;
+          gb.className = 'gps-badge ' + (data.fix_type >= 3 ? 'good' : data.fix_type >= 2 ? 'ok' : 'bad');
+        }
+        txt('g-sat', data.satellites_visible);
+        txt('g-hdop', f(data.eph / 100, 1));
+        if (data.lat && data.lon) {
+          const lat = data.lat / 1e7;
+          const lon = data.lon / 1e7;
+          txt('g-pos', f(lat, 5) + ', ' + f(lon, 5));
+        }
+        break;
+      }
+
+      case 'GLOBAL_POSITION_INT':
+        if (data.lat && data.lon) {
+          const lat = data.lat / 1e7;
+          const lon = data.lon / 1e7;
+          marker.setLatLng([lat, lon]);
+          trailPts.push([lat, lon]);
+          if (trailPts.length > 500) trailPts = trailPts.slice(-500);
+          trail.setLatLngs(trailPts);
+          map.panTo([lat, lon], { animate:true, duration:.3 });
+        }
+        break;
+
+      case 'HEARTBEAT':
+        txt('s-mode', modeMap[data.custom_mode] || ('Mode ' + data.custom_mode));
+        txt('s-stat', statusMap[data.system_status] || '');
+        break;
+
+      case 'VIBE_NODES':
+        updateQuad(data);
+        break;
+
+      case 'ALERT':
+        addAlert(data);
+        break;
+    }
   }
 
-  setWsStatus('CONNECTING');
+  // ── Heading tape ─────────────────────────────────────────────────────────────
+  function updateHeading(hdg) {
+    const tape = document.getElementById('headingTape');
+    const offset = -(hdg / 5 + 18) * 22 + 110;
+    tape.style.transform = `translateX(${offset}px)`;
+    document.getElementById('hdgVal').textContent = Math.round(hdg) + '\u00B0';
+  }
+
+  // ── Quad motor visualization ──────────────────────────────────────────────────
+  function updateQuad(data) {
+    let worstMag = 0;
+    for (let i = 1; i <= 4; i++) {
+      const n = data['n' + i];
+      if (!n) continue;
+      const mag = Math.sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+      if (mag > worstMag) worstMag = mag;
+
+      let color, glowOp, glowR, filterAttr;
+      if (mag > 18) {
+        color='var(--red)'; glowOp=0.25; glowR=48; filterAttr='url(#glow-red)';
+      } else if (mag > 13) {
+        color='var(--yellow)'; glowOp=0.15; glowR=44; filterAttr='url(#glow-yellow)';
+      } else {
+        color='var(--green)'; glowOp=0.06; glowR=40; filterAttr='url(#glow-green)';
+      }
+
+      const ring = document.getElementById('m' + i + 'ring');
+      if (ring) { ring.setAttribute('stroke', color); ring.setAttribute('filter', filterAttr); }
+      const glow = document.getElementById('m' + i + 'glow');
+      if (glow) { glow.setAttribute('fill', color); glow.setAttribute('opacity', glowOp); glow.setAttribute('r', glowR); }
+      const prop = document.getElementById('m' + i + 'prop');
+      if (prop) prop.setAttribute('stroke', color);
+
+      txt('m' + i + 'x', 'X: ' + f(n.x, 2));
+      txt('m' + i + 'y', 'Y: ' + f(n.y, 2));
+      txt('m' + i + 'z', 'Z: ' + f(n.z, 2));
+      const magEl = document.getElementById('m' + i + 'mag');
+      if (magEl) { magEl.textContent = f(mag, 1) + ' m/s\u00B2'; magEl.setAttribute('fill', color); }
+    }
+
+    const vs = document.getElementById('vibeStatus');
+    if (vs) {
+      if (worstMag > 18) {
+        vs.textContent='CRITICAL'; vs.style.background='var(--red-dim)'; vs.style.color='var(--red)';
+      } else if (worstMag > 13) {
+        vs.textContent='WARNING'; vs.style.background='var(--yellow-dim)'; vs.style.color='var(--yellow)';
+      } else {
+        vs.textContent='NOMINAL'; vs.style.background='var(--cyan-dim)'; vs.style.color='var(--cyan)';
+      }
+    }
+  }
+
+  // ── Health scores ─────────────────────────────────────────────────────────────
+  // Accepts both local scoring keys (pwr,imu,ekf,gps,ctl,mot,com) and
+  // dronepulse-style keys (motor,battery,structure,comms) — maps both.
+  const scoreAliases = { motor:'mot', battery:'pwr', structure:'ctl', comms:'com' };
+
+  function updateScores(raw) {
+    const data = {};
+    Object.entries(raw).forEach(([k, v]) => {
+      const key = scoreAliases[k] || k;
+      data[key] = v;
+    });
+    subsystems.forEach(s => {
+      if (data[s.id] !== undefined) setGauge(s.id, data[s.id]);
+    });
+    const vals = subsystems.map(s => data[s.id]).filter(v => v !== undefined);
+    if (vals.length) {
+      const mn = Math.min(...vals);
+      const b  = document.getElementById('hBadge');
+      if (mn >= 70) { b.textContent='NOMINAL'; b.style.background='var(--green-dim)'; b.style.color='var(--green)'; }
+      else if (mn >= 40) { b.textContent='WARNING'; b.style.background='var(--yellow-dim)'; b.style.color='var(--yellow)'; }
+      else { b.textContent='CRITICAL'; b.style.background='var(--red-dim)'; b.style.color='var(--red)'; }
+    }
+  }
+
+  // ── Alerts ───────────────────────────────────────────────────────────────────
+  function addAlert(data) {
+    alertN++;
+    const b = document.getElementById('aCnt');
+    b.style.display = '';
+    b.textContent = alertN;
+    b.style.background = data.severity === 'critical' ? 'var(--red-dim)' : 'var(--yellow-dim)';
+    b.style.color = data.severity === 'critical' ? 'var(--red)' : 'var(--yellow)';
+    const list = document.getElementById('alerts');
+    if (list.querySelector('.empty')) list.innerHTML = '';
+    const el = document.createElement('div');
+    el.className = 'alr ' + (data.severity || 'warning');
+    el.innerHTML = `<div class="alr-icon">${data.severity === 'critical' ? '!' : '?'}</div>
+      <div><div class="alr-msg">${esc(data.message)}</div>
+      <div class="alr-time">${new Date().toLocaleTimeString()}</div></div>`;
+    list.prepend(el);
+    while (list.children.length > 30) list.lastChild.remove();
+  }
+
+  // ── Packet log ────────────────────────────────────────────────────────────────
+  function addLog(droneId, pkt) {
+    const c  = document.getElementById('log');
+    const el = document.createElement('div');
+    el.className = 'll';
+    const ts = pkt.timestamp ? new Date(pkt.timestamp).toLocaleTimeString() : '--';
+    el.innerHTML = `<span class="t">${ts}</span><span class="did">${esc(droneId)}</span><span class="tp">${esc(pkt.type)}</span><span class="d">${esc(JSON.stringify(pkt.data || {}))}</span>`;
+    c.prepend(el);
+    while (c.children.length > 150) c.lastChild.remove();
+  }
+
+  // ── Periodic ──────────────────────────────────────────────────────────────────
+  setInterval(() => {
+    pps = mps; mps = 0;
+    txt('s-pps', pps);
+    txt('s-tot', total.toLocaleString() + ' total');
+    txt('lRate', pps + ' pkt/s');
+    const sorted = Object.entries(mc).sort((a, b) => b[1] - a[1]);
+    document.getElementById('mpills').innerHTML = sorted
+      .map(([t, c]) => `<div class="mp">${esc(t)}<span class="c">${c}</span></div>`).join('');
+  }, 1000);
+
+  setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    txt('uptime',
+      String(Math.floor(s / 3600)).padStart(2, '0') + ':' +
+      String(Math.floor(s % 3600 / 60)).padStart(2, '0') + ':' +
+      String(s % 60).padStart(2, '0'));
+  }, 1000);
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+  function txt(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }
+  function f(n, d)    { return typeof n === 'number' ? n.toFixed(d) : '--'; }
+  function r2d(r)     { return r * 180 / Math.PI; }
+  function esc(s)     { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
   connect();
+  updateHeading(0);
+})();
 </script>
 </body>
 </html>

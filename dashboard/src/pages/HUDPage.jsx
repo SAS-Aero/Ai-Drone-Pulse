@@ -1,11 +1,68 @@
-import React, { useRef, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
-import useDroneStore from '../store/useDroneStore'
+/**
+ * HUDPage.jsx — Cockpit-style live heads-up display.
+ *
+ * Layout:
+ *  Row 1 : Metric tiles — ALTITUDE / SPEED / HEADING / THROTTLE / FLIGHT MODE / PACKETS/S
+ *  Row 2 : Health scores — 7 arc gauges (mot, pwr, imu, ekf, gps, ctl, com) + overall tier
+ *  Row 3 : 3-column body
+ *           Left   → Attitude Indicator + GPS mini-map
+ *           Centre → Motor Vibration (X-config quad with magnitude glow)
+ *           Right  → Battery · Alerts · Message Types
+ *  Row 4 : Packet Log (vertical scrollable)
+ */
 
-// ── Score helpers ─────────────────────────────────────────────────────────────
+import React, { useRef, useEffect, useState, useMemo } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { MapContainer, TileLayer, Marker, useMap } from 'react-leaflet'
+import L from 'leaflet'
+import useDroneStore from '../store/useDroneStore'
+import ArcGauge from '../components/ArcGauge'
+
+// ── Leaflet icon fix ───────────────────────────────────────────────────────────
+
+delete L.Icon.Default.prototype._getIconUrl
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl:       'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl:     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+})
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const MAX_LOG = 80
+
+const FLIGHT_MODES = {
+  0:'STABILIZE', 1:'ACRO', 2:'ALT_HOLD', 3:'AUTO', 4:'GUIDED',
+  5:'LOITER', 6:'RTL', 7:'CIRCLE', 9:'LAND', 11:'DRIFT',
+  13:'SPORT', 16:'POSHOLD', 17:'BRAKE', 18:'THROW',
+}
+
+const HEALTH_GAUGES = [
+  { id: 'mot', label: 'Motor' },
+  { id: 'pwr', label: 'Battery' },
+  { id: 'imu', label: 'IMU' },
+  { id: 'ekf', label: 'EKF' },
+  { id: 'gps', label: 'GPS/Nav' },
+  { id: 'ctl', label: 'Control' },
+  { id: 'com', label: 'Comms' },
+]
+
+// Motor arm positions in the 360×400 SVG viewbox (X-config)
+const QUAD_ARMS = [
+  { key: 'n1', num: 1, label: 'FR', cx: 285, cy: 82  },
+  { key: 'n2', num: 2, label: 'FL', cx: 75,  cy: 82  },
+  { key: 'n3', num: 3, label: 'RL', cx: 75,  cy: 278 },
+  { key: 'n4', num: 4, label: 'RR', cx: 285, cy: 278 },
+]
+
+// Vibration severity thresholds (m/s²)
+const VIBE_WARN     = 13
+const VIBE_CRITICAL = 18
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function scoreColor(s) {
+  if (s == null) return '#4b5563'
   if (s >= 85) return '#00ff88'
   if (s >= 70) return '#44dd88'
   if (s >= 50) return '#ffaa00'
@@ -14,6 +71,7 @@ function scoreColor(s) {
 }
 
 function scoreTier(s) {
+  if (s == null) return 'WAITING'
   if (s >= 85) return 'NOMINAL'
   if (s >= 70) return 'GOOD'
   if (s >= 50) return 'DEGRADED'
@@ -21,285 +79,591 @@ function scoreTier(s) {
   return 'CRITICAL'
 }
 
-// ── Subsystem config ──────────────────────────────────────────────────────────
+function vibeColor(mag) {
+  if (mag == null) return '#4b5563'
+  if (mag > VIBE_CRITICAL) return '#ff3d3d'
+  if (mag > VIBE_WARN)     return '#ffaa00'
+  return '#00ff88'
+}
 
-const SUBSYSTEMS = [
-  { id: 'pwr', name: 'Power',   color: 'var(--pwr)' },
-  { id: 'imu', name: 'IMU',     color: 'var(--imu)' },
-  { id: 'ekf', name: 'EKF',     color: 'var(--ekf)' },
-  { id: 'gps', name: 'GPS',     color: 'var(--gps)' },
-  { id: 'ctl', name: 'Control', color: 'var(--ctl)' },
-  { id: 'mot', name: 'Motors',  color: 'var(--mot)' },
-  { id: 'com', name: 'Comms',   color: 'var(--com)' },
-]
+function fmt(val, dec = 1) {
+  if (val == null) return '—'
+  return Number(val).toFixed(dec)
+}
+
+// ── Metric tile ───────────────────────────────────────────────────────────────
+
+function MetricTile({ title, value, subtitle, accent = false }) {
+  return (
+    <div style={{ flex: 1, background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 14px', minWidth: 0 }}>
+      <div style={{ fontSize: 8, fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.14em', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 4 }}>
+        {title}
+      </div>
+      <div style={{ fontSize: 22, fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, color: accent ? '#06b6d4' : 'var(--text)', lineHeight: 1, letterSpacing: '0.04em' }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4, fontFamily: 'JetBrains Mono, monospace' }}>
+        {subtitle}
+      </div>
+    </div>
+  )
+}
 
 // ── Attitude Indicator ────────────────────────────────────────────────────────
 
-function AttitudeIndicator({ roll = 0, pitch = 0 }) {
+function AttitudeIndicator({ roll = 0, pitch = 0, yaw = 0 }) {
   const rollDeg  = (roll  * 180) / Math.PI
   const pitchDeg = (pitch * 180) / Math.PI
-  const pitchPx  = pitchDeg * 1.8
+  const yawDeg   = (yaw   * 180) / Math.PI
+  const pitchPx  = pitchDeg * 2.2
+
+  const heading = ((yawDeg % 360) + 360) % 360
+  const tapeItems = useMemo(() => {
+    const items = []
+    for (let d = -40; d <= 40; d += 10) {
+      const deg   = Math.round((heading + d + 360) % 360)
+      const label = deg === 0 ? 'N' : deg === 90 ? 'E' : deg === 180 ? 'S' : deg === 270 ? 'W' : String(deg)
+      items.push({ offset: d, deg, label, cardinal: ['N','E','S','W'].includes(label) })
+    }
+    return items
+  }, [heading])
 
   return (
-    <div style={{
-      width: 148, height: 148,
-      borderRadius: '50%',
-      overflow: 'hidden',
-      border: '2px solid rgba(255,255,255,0.10)',
-      position: 'relative',
-      flexShrink: 0,
-      margin: '0 auto',
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
+      {/* Main sphere */}
       <div style={{
-        position: 'absolute', inset: 0,
-        transform: `rotate(${rollDeg}deg)`,
-        transformOrigin: 'center center',
+        width: 190, height: 190, borderRadius: '50%', overflow: 'hidden',
+        border: '2px solid rgba(255,255,255,0.12)', position: 'relative', flexShrink: 0,
+        boxShadow: 'inset 0 0 24px rgba(0,0,0,0.6)',
       }}>
+        {/* Rotating interior */}
         <div style={{
-          position: 'absolute', left: 0, right: 0, top: 0,
-          height: `calc(50% - ${pitchPx}px)`,
-          background: 'linear-gradient(to bottom, #0a2a4a, #1a4a7a)',
-        }} />
-        <div style={{
-          position: 'absolute', left: 0, right: 0, bottom: 0,
-          height: `calc(50% + ${pitchPx}px)`,
-          background: 'linear-gradient(to top, #3d1f00, #6b3a0f)',
-        }} />
-        <div style={{
-          position: 'absolute', left: 0, right: 0,
-          top: `calc(50% - ${pitchPx}px)`,
-          height: 1,
-          background: 'rgba(255,255,255,0.45)',
-        }} />
-      </div>
-      {/* Fixed crosshair */}
-      <div style={{
-        position: 'absolute', inset: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        pointerEvents: 'none',
-      }}>
-        <div style={{ position: 'relative', width: 80 }}>
-          <div style={{ position: 'absolute', left: 0, top: '50%', width: 24, height: 2, background: '#ffaa00', transform: 'translateY(-50%)' }} />
-          <div style={{ position: 'absolute', right: 0, top: '50%', width: 24, height: 2, background: '#ffaa00', transform: 'translateY(-50%)' }} />
+          position: 'absolute', inset: -40,
+          transform: `rotate(${rollDeg}deg)`,
+          transformOrigin: 'center center',
+        }}>
           <div style={{
-            position: 'absolute', left: '50%', top: '50%',
-            transform: 'translate(-50%, -50%)',
-            width: 8, height: 8, borderRadius: '50%',
-            border: '2px solid #ffaa00',
+            position: 'absolute', left: 0, right: 0, top: 0,
+            height: `calc(50% - ${pitchPx}px + 40px)`,
+            background: 'linear-gradient(to bottom, #0a2a4a 0%, #1a5080 60%, #2060a0 100%)',
           }} />
+          <div style={{
+            position: 'absolute', left: 0, right: 0, bottom: 0,
+            height: `calc(50% + ${pitchPx}px + 40px)`,
+            background: 'linear-gradient(to top, #3d1800 0%, #6b3010 70%, #7a3a12 100%)',
+          }} />
+          <div style={{
+            position: 'absolute', left: 0, right: 0,
+            top: `calc(50% - ${pitchPx}px + 40px)`,
+            height: 1.5, background: 'rgba(255,255,255,0.7)',
+          }} />
+          {[-20, -10, 10, 20].map((p) => {
+            const offset = -pitchPx + p * 2.2
+            return (
+              <div key={p} style={{
+                position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+                top: `calc(50% + ${offset}px + 40px)`,
+                height: 1, width: Math.abs(p) === 10 ? 60 : 80,
+                background: 'rgba(255,255,255,0.35)',
+              }}>
+                <span style={{
+                  position: 'absolute', right: '100%', top: -7, marginRight: 4, fontSize: 8,
+                  fontFamily: 'JetBrains Mono, monospace', color: 'rgba(255,255,255,0.5)',
+                }}>
+                  {Math.abs(p)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Roll arc + pointer SVG overlay */}
+        <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }} viewBox="0 0 190 190">
+          <path d="M 25 95 A 70 70 0 0 1 165 95" fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" />
+          {[-45,-30,-20,-10,0,10,20,30,45].map((a) => {
+            const rad = ((-90 + a) * Math.PI) / 180
+            const r1 = 68, r2 = 60
+            return (
+              <line key={a}
+                x1={95 + r1 * Math.cos(rad)} y1={95 + r1 * Math.sin(rad)}
+                x2={95 + r2 * Math.cos(rad)} y2={95 + r2 * Math.sin(rad)}
+                stroke={a === 0 ? '#ffaa00' : 'rgba(255,255,255,0.4)'}
+                strokeWidth={a === 0 ? 2 : 1}
+              />
+            )
+          })}
+          <polygon points="95,22 91,30 99,30" fill="#ffaa00" transform={`rotate(${rollDeg} 95 95)`} />
+        </svg>
+
+        {/* Fixed aircraft crosshair */}
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+          <svg width="100" height="24" viewBox="0 0 100 24">
+            <rect x="0" y="10" width="32" height="4" rx="2" fill="#ffaa00" />
+            <rect x="68" y="10" width="32" height="4" rx="2" fill="#ffaa00" />
+            <rect x="44" y="16" width="12" height="4" rx="1" fill="#ffaa00" />
+            <circle cx="50" cy="12" r="4" fill="none" stroke="#ffaa00" strokeWidth="2" />
+            <circle cx="50" cy="12" r="1.5" fill="#ffaa00" />
+          </svg>
         </div>
       </div>
-    </div>
-  )
-}
 
-// ── Compass ───────────────────────────────────────────────────────────────────
-
-function Compass({ heading = 0 }) {
-  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
-  const dir  = dirs[Math.round(heading / 45) % 8]
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 22, fontWeight: 700, color: 'var(--text)', lineHeight: 1 }}>
-        {String(Math.round(heading)).padStart(3, '0')}°
-      </div>
-      <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, letterSpacing: '0.14em', color: 'var(--text-muted)', marginTop: 4 }}>
-        {dir}
-      </div>
-    </div>
-  )
-}
-
-// ── Data row ─────────────────────────────────────────────────────────────────
-
-function DataRow({ label, value, unit }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-      <span style={{ fontFamily: 'Inter, sans-serif', fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>
-        {label}
-      </span>
-      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: 'var(--text)', letterSpacing: '0.04em', textAlign: 'right' }}>
-        {value !== null && value !== undefined ? (
-          <>
-            {value}
-            {unit && <span style={{ fontSize: 9, color: 'var(--text-muted)', marginLeft: 2 }}>{unit}</span>}
-          </>
-        ) : '—'}
-      </span>
-    </div>
-  )
-}
-
-// ── Score ring (SVG arc, 220°) ────────────────────────────────────────────────
-
-function ScoreRing({ score = 0, color, subsysColor }) {
-  const size = 82, sw = 7, r = (size - sw) / 2
-  const circ = 2 * Math.PI * r
-  const offset = circ - (Math.min(100, Math.max(0, score)) / 100) * circ
-  const cx = size / 2, cy = size / 2
-
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      <defs>
-        <filter id={`hud-glow-${Math.round(score)}-${subsysColor?.replace(/[^a-z]/gi,'')}`} x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="2" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
-      </defs>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={sw} />
-      <circle
-        cx={cx} cy={cy} r={r} fill="none"
-        stroke={color} strokeWidth={sw}
-        strokeDasharray={circ} strokeDashoffset={offset}
-        strokeLinecap="round"
-        transform={`rotate(-90 ${cx} ${cy})`}
-        style={{ transition: 'stroke-dashoffset 0.5s ease, stroke 0.4s ease' }}
-      />
-      <text x={cx} y={cy - 4} textAnchor="middle" dominantBaseline="middle"
-        fontFamily="JetBrains Mono, monospace" fontSize={22} fontWeight="700" fill={color}
-        style={{ transition: 'fill 0.4s ease' }}>
-        {Math.round(score)}
-      </text>
-      <text x={cx} y={cy + 14} textAnchor="middle"
-        fontFamily="JetBrains Mono, monospace" fontSize={7} letterSpacing="1" fill="rgba(255,255,255,0.2)">
-        /100
-      </text>
-      {subsysColor && (
-        <circle cx={cx} cy={sw / 2} r={3} fill={subsysColor} opacity={0.9} />
-      )}
-    </svg>
-  )
-}
-
-// ── Sparkline ─────────────────────────────────────────────────────────────────
-
-function Sparkline({ data, color, id }) {
-  const chartData = useMemo(() => data.map((pt, i) => ({ i, v: Math.round(pt.v ?? pt) })), [data])
-  if (!chartData.length) return (
-    <div style={{ height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <span style={{ fontSize: 9, color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.08em' }}>NO DATA</span>
-    </div>
-  )
-  const gradId = `spark-${id}`
-  return (
-    <ResponsiveContainer width="100%" height={36}>
-      <AreaChart data={chartData} margin={{ top: 2, right: 0, left: 0, bottom: 2 }}>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%"   stopColor={color} stopOpacity={0.35} />
-            <stop offset="100%" stopColor={color} stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <Tooltip content={({ active, payload }) =>
-          active && payload?.length ? (
-            <div style={{ background: 'var(--surface)', border: `1px solid ${color}40`, padding: '2px 6px', fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color }}>
-              {payload[0].value}
-            </div>
-          ) : null
-        } />
-        <Area type="monotone" dataKey="v" stroke={color} strokeWidth={1.5}
-          fill={`url(#${gradId})`} dot={false} activeDot={{ r: 2, fill: color, stroke: 'none' }}
-          isAnimationActive={false} />
-      </AreaChart>
-    </ResponsiveContainer>
-  )
-}
-
-// ── Subsystem card ────────────────────────────────────────────────────────────
-
-function SubsystemCard({ id, name, color, score = 0, sparkData = [] }) {
-  const c = scoreColor(score)
-  const tier = scoreTier(score)
-  return (
-    <div style={{
-      background: 'var(--surface)',
-      border: '1px solid var(--border)',
-      padding: '14px 12px 10px',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-      position: 'relative', overflow: 'hidden',
-    }}>
-      {/* Left accent bar */}
+      {/* Compass tape */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, width: 3, height: '100%',
-        background: `linear-gradient(to bottom, ${c}, ${c}00)`, opacity: 0.8,
-      }} />
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'stretch', paddingLeft: 6 }}>
-        <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, fontWeight: 700, letterSpacing: '0.14em', color, textTransform: 'uppercase' }}>
-          {name}
+        width: 190, background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,255,255,0.08)',
+        borderTop: 'none', display: 'flex', alignItems: 'center', height: 24, overflow: 'hidden', position: 'relative',
+      }}>
+        <div style={{ position: 'absolute', left: '50%', top: 0, width: 1, height: 6, background: '#ffaa00', transform: 'translateX(-50%)' }} />
+        <div style={{ display: 'flex', width: '100%', justifyContent: 'space-around', alignItems: 'center', paddingTop: 6 }}>
+          {tapeItems.map(({ offset, label, cardinal }) => (
+            <span key={offset} style={{
+              fontSize: cardinal ? 10 : 9,
+              fontFamily: 'JetBrains Mono, monospace',
+              color: offset === 0 ? '#ffaa00' : cardinal ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.35)',
+              fontWeight: cardinal || offset === 0 ? 700 : 400,
+            }}>
+              {label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* R / P / Y readout */}
+      <div style={{ display: 'flex', gap: 14, marginTop: 8 }}>
+        {[
+          { label: 'R', value: rollDeg.toFixed(1) },
+          { label: 'P', value: pitchDeg.toFixed(1) },
+          { label: 'Y', value: (((yawDeg % 360) + 360) % 360).toFixed(1) },
+        ].map(({ label, value }) => (
+          <div key={label} style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+            <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)' }}>{label}:</span>
+            <span style={{ fontSize: 12, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text)', fontWeight: 700 }}>{value}°</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── GPS map ───────────────────────────────────────────────────────────────────
+
+function MapCenter({ lat, lng }) {
+  const map = useMap()
+  useEffect(() => { map.setView([lat, lng], Math.max(map.getZoom(), 13)) }, [lat, lng]) // eslint-disable-line react-hooks/exhaustive-deps
+  return null
+}
+
+function GpsPanel({ position, gpsRaw }) {
+  const sats = gpsRaw?.satellites_visible ?? null
+  const hdop = gpsRaw ? (gpsRaw.eph / 100).toFixed(1) : null
+  const fixNames = { 0:'No GPS', 1:'No Fix', 2:'2D Fix', 3:'3D Fix', 4:'DGPS', 5:'RTK Float', 6:'RTK Fix' }
+  const fixType  = gpsRaw?.fix_type ?? 0
+  const fixLabel = fixNames[fixType] ?? `Fix ${fixType}`
+  const fixOk    = fixType >= 3
+
+  const droneIcon = useMemo(() => L.divIcon({
+    html: `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">
+      <circle cx="10" cy="10" r="7" fill="#06b6d4" fill-opacity="0.85" stroke="#06b6d4" stroke-width="1.5"/>
+      <polygon points="10,1 13,8 10,6 7,8" fill="#fff"/>
+    </svg>`,
+    className: '', iconSize: [20, 20], iconAnchor: [10, 10],
+  }), [])
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+      <div style={panelTitle}>GPS POSITION</div>
+      {/* Fix badge */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{
+          fontSize: 9, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700,
+          padding: '2px 8px', letterSpacing: '0.08em',
+          color: fixOk ? '#00ff88' : '#ffaa00',
+          background: fixOk ? 'rgba(0,255,136,0.1)' : 'rgba(255,170,0,0.1)',
+          border: `1px solid ${fixOk ? 'rgba(0,255,136,0.3)' : 'rgba(255,170,0,0.3)'}`,
+        }}>
+          {fixLabel}
+        </span>
+        <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)' }}>
+          Sats: <b style={{ color: 'var(--text)' }}>{sats ?? '—'}</b>
+          <span style={{ marginLeft: 8 }}>HDOP: <b style={{ color: 'var(--text)' }}>{hdop ?? '—'}</b></span>
         </span>
       </div>
-      {/* Score ring */}
-      <ScoreRing score={score} color={c} subsysColor={color} />
-      {/* Tier badge */}
-      <div style={{
-        fontFamily: 'JetBrains Mono, monospace', fontSize: 8, fontWeight: 700,
-        letterSpacing: '0.14em', color: c,
-        background: `${c}18`, border: `1px solid ${c}30`,
-        padding: '2px 8px',
-      }}>
-        {tier}
+      <div style={{ height: 150, borderRadius: 4, overflow: 'hidden', background: '#0d1117' }}>
+        {position ? (
+          <MapContainer center={[position.lat, position.lng]} zoom={13}
+            style={{ width: '100%', height: '100%' }} zoomControl={false} attributionControl={false}>
+            <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" subdomains="abcd" maxZoom={19} />
+            <MapCenter lat={position.lat} lng={position.lng} />
+            <Marker position={[position.lat, position.lng]} icon={droneIcon} />
+          </MapContainer>
+        ) : (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' }}>
+            NO FIX
+          </div>
+        )}
       </div>
-      {/* Sparkline */}
-      <div style={{ width: '100%', marginTop: 2 }}>
-        <Sparkline data={sparkData} color={color} id={id} />
+      {position && (
+        <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)' }}>
+          {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Motor Vibration (X-config quad with glow) ─────────────────────────────────
+
+function MotorVibPanel({ vibeData, composite }) {
+  const statusColor = scoreColor(composite)
+  const statusTier  = scoreTier(composite)
+
+  // Compute magnitude for each arm
+  const armData = QUAD_ARMS.map((arm) => {
+    const nd  = vibeData?.[arm.key]
+    const mag = nd ? Math.sqrt(nd.x * nd.x + nd.y * nd.y + nd.z * nd.z) : null
+    const col = vibeColor(mag)
+    const glowR  = mag > VIBE_CRITICAL ? 44 : mag > VIBE_WARN ? 41 : 38
+    const glowOp = mag > VIBE_CRITICAL ? 0.22 : mag > VIBE_WARN ? 0.14 : 0.06
+    return { ...arm, nd, mag, col, glowR, glowOp }
+  })
+
+  const worstMag = Math.max(...armData.map((a) => a.mag ?? 0))
+  const vibeStatusColor = vibeColor(worstMag)
+  const vibeStatusLabel = worstMag > VIBE_CRITICAL ? 'CRITICAL' : worstMag > VIBE_WARN ? 'WARNING' : vibeData ? 'NOMINAL' : 'WAITING'
+
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '12px 14px', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexShrink: 0 }}>
+        <span style={panelTitle}>MOTOR VIBRATION</span>
+        <span style={{
+          fontSize: 9, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700,
+          padding: '2px 10px', letterSpacing: '0.1em',
+          color: vibeStatusColor, background: `${vibeStatusColor}18`, border: `1px solid ${vibeStatusColor}40`,
+        }}>
+          {vibeStatusLabel}
+        </span>
+      </div>
+
+      {/* X-config SVG quad */}
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 0 }}>
+        <svg viewBox="0 0 360 400" style={{ width: '100%', maxWidth: 340, maxHeight: 340 }}>
+          <defs>
+            <filter id="glow-g"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <filter id="glow-y"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <filter id="glow-r"><feGaussianBlur stdDeviation="9" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+
+          {/* FRONT arrow */}
+          <polygon points="180,28 172,42 188,42" fill="#06b6d4" opacity="0.7" />
+          <text x="180" y="22" fill="#06b6d4" fontSize="10" fontFamily="sans-serif" fontWeight="600" textAnchor="middle">FRONT</text>
+
+          {/* Frame arms */}
+          {QUAD_ARMS.map((arm) => (
+            <line key={arm.key} x1="180" y1="180" x2={arm.cx} y2={arm.cy}
+              stroke="rgba(255,255,255,0.15)" strokeWidth="3" strokeLinecap="round" />
+          ))}
+
+          {/* Center body */}
+          <rect x="158" y="158" width="44" height="44" rx="8" fill="#1a2540" stroke="rgba(255,255,255,0.2)" strokeWidth="1.5" />
+
+          {/* Per-motor nodes */}
+          {armData.map((arm) => {
+            const filterAttr = arm.mag > VIBE_CRITICAL ? 'url(#glow-r)' : arm.mag > VIBE_WARN ? 'url(#glow-y)' : 'url(#glow-g)'
+            // axis label positions relative to node center
+            const below = arm.cy > 180  // rear motors → labels below prop
+            const yOff  = below ? 36 : -36
+            const yBase = arm.cy + yOff
+            return (
+              <g key={arm.key}>
+                {/* Glow halo */}
+                <circle cx={arm.cx} cy={arm.cy} r={arm.glowR}
+                  fill={arm.col} opacity={arm.glowOp} />
+                {/* Prop circle */}
+                <circle cx={arm.cx} cy={arm.cy} r="36"
+                  fill="none" stroke={arm.col} strokeWidth="1.5" opacity="0.3" />
+                {/* Motor ring */}
+                <circle cx={arm.cx} cy={arm.cy} r="28"
+                  fill="none" stroke={arm.col} strokeWidth="2.5"
+                  filter={arm.nd ? filterAttr : undefined}
+                  style={{ transition: 'stroke 0.3s ease' }} />
+                {/* Motor number */}
+                <text x={arm.cx} y={arm.cy} textAnchor="middle" dominantBaseline="central"
+                  fontFamily="sans-serif" fontSize="14" fontWeight="700" fill="rgba(255,255,255,0.9)">
+                  {arm.num}
+                </text>
+                {/* Magnitude above/below prop */}
+                <text x={arm.cx} y={below ? arm.cy - 34 : arm.cy + 42}
+                  textAnchor="middle" fontFamily="sans-serif" fontSize="11" fontWeight="700"
+                  fill={arm.col} style={{ transition: 'fill 0.3s ease' }}>
+                  {arm.mag != null ? `${arm.mag.toFixed(1)} m/s²` : '—'}
+                </text>
+                {/* X/Y/Z axis values */}
+                <text x={arm.cx} y={yBase + (below ? 16 : 0)} textAnchor="middle" fontFamily="sans-serif" fontSize="9" fontWeight="600" fill="#ef4444">
+                  X: {fmt(arm.nd?.x, 2)}
+                </text>
+                <text x={arm.cx} y={yBase + (below ? 27 : 11)} textAnchor="middle" fontFamily="sans-serif" fontSize="9" fontWeight="600" fill="#22c55e">
+                  Y: {fmt(arm.nd?.y, 2)}
+                </text>
+                <text x={arm.cx} y={yBase + (below ? 38 : 22)} textAnchor="middle" fontFamily="sans-serif" fontSize="9" fontWeight="600" fill="#3b82f6">
+                  Z: {fmt(arm.nd?.z, 2)}
+                </text>
+              </g>
+            )
+          })}
+
+          {/* Legend */}
+          <rect x="120" y="370" width="8" height="8" rx="1" fill="#ef4444" />
+          <text x="132" y="378" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="sans-serif">X</text>
+          <rect x="148" y="370" width="8" height="8" rx="1" fill="#22c55e" />
+          <text x="160" y="378" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="sans-serif">Y</text>
+          <rect x="176" y="370" width="8" height="8" rx="1" fill="#3b82f6" />
+          <text x="188" y="378" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="sans-serif">Z</text>
+          <text x="214" y="378" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="sans-serif">m/s²</text>
+        </svg>
+      </div>
+
+      {/* Overall composite score bar */}
+      <div style={{ flexShrink: 0, marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ fontSize: 9, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>COMPOSITE</span>
+        <div style={{ flex: 1, height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+          <div style={{
+            height: '100%', borderRadius: 2,
+            width: `${composite ?? 0}%`,
+            background: statusColor,
+            transition: 'width 0.5s ease, background 0.4s ease',
+          }} />
+        </div>
+        <span style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, color: statusColor, minWidth: 30 }}>
+          {composite != null ? Math.round(composite) : '—'}
+        </span>
       </div>
     </div>
   )
 }
 
-// ── Panel wrapper ─────────────────────────────────────────────────────────────
+// ── Battery panel ─────────────────────────────────────────────────────────────
 
-function Panel({ title, children, style }) {
+function BatteryPanel({ pct, voltage, current }) {
+  const barColor = pct == null ? '#4b5563' : pct > 50 ? '#00ff88' : pct > 25 ? '#ffaa00' : '#ff3d3d'
   return (
-    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10, ...style }}>
-      {title && (
-        <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 8, fontWeight: 700, letterSpacing: '0.16em', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-          {title}
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+      <div style={panelTitle}>BATTERY</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {/* Battery shape */}
+        <div style={{ position: 'relative', width: 60, height: 26, flexShrink: 0 }}>
+          <div style={{ position: 'absolute', inset: 0, border: '2px solid rgba(255,255,255,0.2)', borderRadius: 4 }} />
+          <div style={{ position: 'absolute', top: '25%', right: -6, width: 5, height: '50%', background: 'rgba(255,255,255,0.2)', borderRadius: '0 2px 2px 0' }} />
+          <div style={{
+            position: 'absolute', top: 2, left: 2, bottom: 2,
+            width: `calc(${Math.min(100, pct ?? 0)}% - 4px)`,
+            background: barColor, borderRadius: 2,
+            transition: 'width 0.5s ease, background 0.4s ease',
+          }} />
+        </div>
+        <span style={{ fontSize: 28, fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, color: barColor, letterSpacing: '0.02em', lineHeight: 1 }}>
+          {pct != null ? `${Math.round(pct)}%` : '--%'}
+        </span>
+      </div>
+      <div style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-muted)' }}>
+        {voltage != null ? `${voltage} V` : '-- V'}
+        <span style={{ marginLeft: 12 }}>{current != null ? `${current} A` : '-- A'}</span>
+      </div>
+    </div>
+  )
+}
+
+// ── Alerts panel ──────────────────────────────────────────────────────────────
+
+function AlertsPanel({ alerts = [] }) {
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, flex: 1, overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        <span style={panelTitle}>ALERTS</span>
+        {alerts.length > 0 && (
+          <span style={{ background: '#ff3d3d', color: '#fff', fontFamily: 'JetBrains Mono, monospace', fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3 }}>
+            {alerts.length}
+          </span>
+        )}
+      </div>
+      <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+        {alerts.length === 0 ? (
+          <div style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)' }}>All systems nominal</div>
+        ) : (
+          alerts.map((a, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+              <span style={{
+                fontSize: 8, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700,
+                padding: '1px 5px', letterSpacing: '0.08em', flexShrink: 0, marginTop: 1,
+                color: (a.level || a.severity) === 'critical' ? '#ff3d3d' : '#ffaa00',
+                background: (a.level || a.severity) === 'critical' ? 'rgba(255,61,61,0.12)' : 'rgba(255,170,0,0.12)',
+              }}>
+                {(a.level || a.severity) === 'critical' ? 'CRIT' : 'WARN'}
+              </span>
+              <div>
+                {a.code && <div style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text)', fontWeight: 700 }}>{a.code}</div>}
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{a.message}</div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Message types panel ───────────────────────────────────────────────────────
+
+function MsgTypesPanel({ telemetry }) {
+  const types = Object.keys(telemetry || {})
+  return (
+    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+      <span style={panelTitle}>MESSAGE TYPES</span>
+      {types.length === 0 ? (
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>—</div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {types.map((t) => (
+            <span key={t} style={{
+              fontSize: 8, fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.06em',
+              color: '#06b6d4', background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)',
+              padding: '1px 6px', borderRadius: 3,
+            }}>
+              {t}
+            </span>
+          ))}
         </div>
       )}
-      {children}
     </div>
   )
 }
 
-// ── HUD Page ──────────────────────────────────────────────────────────────────
+// ── Packet log (vertical scrollable) ─────────────────────────────────────────
+
+function PacketLog({ log, rate }) {
+  const logRef = useRef(null)
+  // Auto-scroll to bottom on new entries
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [log])
+
+  return (
+    <div style={{
+      background: 'var(--surface)', border: '1px solid var(--border)',
+      display: 'flex', flexDirection: 'column', flexShrink: 0,
+      maxHeight: 140,
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '5px 12px',
+        borderBottom: '1px solid var(--border)', flexShrink: 0,
+      }}>
+        <span style={panelTitle}>PACKET LOG</span>
+        <span style={{
+          fontSize: 10, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700,
+          color: rate > 0 ? '#06b6d4' : 'var(--text-dim)',
+          background: rate > 0 ? 'rgba(6,182,212,0.1)' : 'transparent',
+          border: `1px solid ${rate > 0 ? 'rgba(6,182,212,0.3)' : 'transparent'}`,
+          padding: '1px 8px', borderRadius: 3,
+        }}>
+          {rate} pkts/s
+        </span>
+      </div>
+      <div ref={logRef} style={{ overflowY: 'auto', flex: 1 }}>
+        {log.length === 0 ? (
+          <div style={{ padding: '8px 12px', fontSize: 10, color: 'var(--text-dim)', fontFamily: 'JetBrains Mono, monospace' }}>
+            waiting for packets…
+          </div>
+        ) : (
+          log.map((entry, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 10, padding: '2px 12px',
+              borderBottom: '1px solid rgba(255,255,255,0.02)',
+              fontSize: 10, fontFamily: 'JetBrains Mono, monospace',
+            }}>
+              <span style={{ color: 'var(--text-dim)', minWidth: 60, flexShrink: 0 }}>{entry.ts}</span>
+              <span style={{ color: '#b388ff', minWidth: 70, flexShrink: 0 }}>{entry.drone}</span>
+              <span style={{ color: '#06b6d4', minWidth: 140, flexShrink: 0 }}>{entry.type}</span>
+              <span style={{ color: 'rgba(255,255,255,0.25)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {entry.preview}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Main HUD page ─────────────────────────────────────────────────────────────
 
 export default function HUDPage() {
-  const drones       = useDroneStore((s) => s.drones)
+  const { droneId: paramId } = useParams()
+  const drones        = useDroneStore((s) => s.drones)
   const activeDroneId = useDroneStore((s) => s.activeDroneId)
-  const wsStatus     = useDroneStore((s) => s.wsStatus)
-  const navigate     = useNavigate()
+  const wsStatus      = useDroneStore((s) => s.wsStatus)
+  const navigate      = useNavigate()
 
-  // Pick drone: activeDroneId first, then first connected, then first available
-  const droneId = activeDroneId
+  const droneId = paramId
+    || activeDroneId
     || Object.values(drones).find((d) => d.connected)?.id
     || Object.keys(drones)[0]
     || null
 
   const drone = droneId ? drones[droneId] : null
 
-  // History ref for sparklines (kept in component to survive re-renders)
-  const histRef = useRef({})
+  // ── Packet rate tracking ──────────────────────────────────────────────────
+  const [pktRate,  setPktRate]  = useState(0)
+  const [pktTotal, setPktTotal] = useState(0)
+  const pktCountRef   = useRef(0)
+  const prevLastSeen  = useRef(null)
+
   useEffect(() => {
-    if (!drone) return
-    SUBSYSTEMS.forEach(({ id }) => {
-      histRef.current[id] = drone.history[id] || []
+    if (!drone?.lastSeen || drone.lastSeen === prevLastSeen.current) return
+    prevLastSeen.current = drone.lastSeen
+    pktCountRef.current++
+  }, [drone?.lastSeen])
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setPktRate(pktCountRef.current)
+      setPktTotal((t) => t + pktCountRef.current)
+      pktCountRef.current = 0
+    }, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Packet log ────────────────────────────────────────────────────────────
+  const [packetLog, setPacketLog] = useState([])
+  const prevTelemetry = useRef({})
+
+  useEffect(() => {
+    if (!drone?.telemetry) return
+    const newEntries = []
+    Object.keys(drone.telemetry).forEach((t) => {
+      if (prevTelemetry.current[t] !== drone.telemetry[t]) {
+        newEntries.push({
+          ts:      new Date().toLocaleTimeString(),
+          drone:   droneId || '',
+          type:    t,
+          preview: JSON.stringify(drone.telemetry[t]).slice(0, 80),
+        })
+      }
     })
-  }, [drone])
+    if (newEntries.length === 0) return
+    prevTelemetry.current = drone.telemetry
+    setPacketLog((log) => {
+      const next = [...log, ...newEntries]
+      return next.length > MAX_LOG ? next.slice(-MAX_LOG) : next
+    })
+  }, [drone?.telemetry, droneId])
 
-  // ── No WS / no drone states ───────────────────────────────────────────────
-
-  if (wsStatus === 'disconnected' || wsStatus === 'connecting') {
+  // ── Waiting / no drone state ──────────────────────────────────────────────
+  if (!drone && (wsStatus === 'disconnected' || wsStatus === 'connecting' || wsStatus === 'error')) {
     return (
       <div className="empty-state" style={{ height: '100%' }}>
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
         </svg>
-        <span>{wsStatus === 'connecting' ? 'CONNECTING…' : 'NO CONNECTION'}</span>
-        <span style={{ fontSize: 11, textTransform: 'none', letterSpacing: 0 }}>
-          Waiting for gateway WebSocket
-        </span>
+        <span>{wsStatus === 'connecting' ? 'CONNECTING…' : wsStatus === 'error' ? 'CONNECTION ERROR' : 'NO CONNECTION'}</span>
       </div>
     )
   }
@@ -307,201 +671,139 @@ export default function HUDPage() {
   if (!drone) {
     return (
       <div className="empty-state" style={{ height: '100%' }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.2}>
           <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
         </svg>
-        <span>NO DRONE</span>
-        <span style={{ fontSize: 11, textTransform: 'none', letterSpacing: 0 }}>
-          Awaiting drone connection
-        </span>
+        <span>Waiting for drone…</span>
       </div>
     )
   }
 
   // ── Extract telemetry ─────────────────────────────────────────────────────
+  const telem      = drone.telemetry || {}
+  const attitude   = telem.ATTITUDE
+  const gpsRaw     = telem.GPS_RAW_INT
+  const vfrHud     = telem.VFR_HUD
+  const sysStatus  = telem.SYS_STATUS
+  const vibeNodes  = telem.VIBE_NODES
+  const heartbeat  = telem.HEARTBEAT
+  const scores     = drone.scores || {}
 
-  const telem    = drone.telemetry || {}
-  const attitude = telem.ATTITUDE
-  const gpsRaw   = telem.GPS_RAW_INT
-  const vfrHud   = telem.VFR_HUD
-  const sysStatus = telem.SYS_STATUS
-  const scores   = drone.scores
-
-  const rollDeg  = attitude ? ((attitude.roll  * 180) / Math.PI).toFixed(1) : null
-  const pitchDeg = attitude ? ((attitude.pitch * 180) / Math.PI).toFixed(1) : null
   const altM     = vfrHud?.alt?.toFixed(1) ?? (gpsRaw ? (gpsRaw.alt / 1000).toFixed(1) : null)
-  const sats     = gpsRaw?.satellites_visible ?? null
-  const hdop     = gpsRaw ? (gpsRaw.eph / 100).toFixed(1) : null
-  const lat      = gpsRaw ? (gpsRaw.lat / 1e7).toFixed(5) : null
-  const lon      = gpsRaw ? (gpsRaw.lon / 1e7).toFixed(5) : null
+  const speed    = vfrHud?.groundspeed?.toFixed(1) ?? null
+  const hdgRaw   = vfrHud?.heading ?? (attitude ? ((attitude.yaw * 180) / Math.PI) : null)
+  const hdg      = hdgRaw != null ? ((hdgRaw % 360) + 360) % 360 : null
+  const hdgDir   = hdg != null ? ['N','NE','E','SE','S','SW','W','NW'][Math.round(hdg / 45) % 8] : null
+  const throttle = vfrHud?.throttle?.toFixed(0) ?? null
+  const modeNum  = heartbeat?.custom_mode
+  const modeStr  = modeNum != null ? (FLIGHT_MODES[modeNum] ?? `Mode ${modeNum}`) : '—'
   const battPct  = sysStatus?.battery_remaining ?? null
-  const battV    = sysStatus?.voltage_battery ? (sysStatus.voltage_battery / 1000).toFixed(1) : null
-  const heading  = vfrHud?.heading ?? 0
+  const battV    = sysStatus?.voltage_battery != null ? (sysStatus.voltage_battery / 1000).toFixed(1) : null
+  const battA    = sysStatus?.current_battery != null ? (sysStatus.current_battery / 100).toFixed(1) : null
 
-  const composite  = scores.composite ?? 50
-  const compColor  = scoreColor(composite)
-  const compTier   = scoreTier(composite)
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  const composite   = scores.composite ?? null
+  const tierColor   = scoreColor(composite)
+  const overallTier = scoreTier(composite)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%', overflow: 'auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, height: '100%', overflow: 'hidden', minHeight: 0 }}>
 
-      {/* Drone selector bar */}
+      {/* ── Multi-drone selector ── */}
       {Object.keys(drones).length > 1 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
           {Object.values(drones).map((d) => (
             <button key={d.id} onClick={() => navigate(`/hud/${d.id}`)}
               style={{
                 fontFamily: 'JetBrains Mono, monospace', fontSize: 10, fontWeight: 700,
-                padding: '4px 12px', cursor: 'pointer', letterSpacing: '0.08em',
-                background: d.id === droneId ? 'var(--blue)' : 'var(--surface)',
-                border: `1px solid ${d.id === droneId ? 'var(--blue)' : 'var(--border)'}`,
+                padding: '4px 12px', cursor: 'pointer', letterSpacing: '0.08em', borderRadius: 4,
+                background: d.id === droneId ? '#06b6d4' : 'var(--surface)',
+                border: `1px solid ${d.id === droneId ? '#06b6d4' : 'var(--border)'}`,
                 color: d.id === droneId ? '#fff' : 'var(--text-muted)',
               }}>
+              <span style={{
+                display: 'inline-block', width: 6, height: 6, borderRadius: '50%', marginRight: 6,
+                background: d.connected ? '#00ff88' : '#4b5563',
+                boxShadow: d.connected ? '0 0 4px #00ff88' : 'none',
+              }} />
               {d.id}
             </button>
           ))}
         </div>
       )}
 
-      {/* ── Top row: attitude / flight data / health ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-
-        {/* Attitude */}
-        <Panel title="Attitude">
-          <AttitudeIndicator roll={attitude?.roll ?? 0} pitch={attitude?.pitch ?? 0} />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            <DataRow label="Roll"  value={rollDeg}  unit="°" />
-            <DataRow label="Pitch" value={pitchDeg} unit="°" />
-          </div>
-        </Panel>
-
-        {/* Flight data */}
-        <Panel title="Flight Data">
-          <DataRow label="Altitude"    value={altM}                                        unit="m"   />
-          <DataRow label="Groundspeed" value={vfrHud?.groundspeed?.toFixed(1) ?? null}    unit="m/s" />
-          <DataRow label="Airspeed"    value={vfrHud?.airspeed?.toFixed(1) ?? null}        unit="m/s" />
-          <DataRow label="Climb"       value={vfrHud?.climb?.toFixed(1) ?? null}           unit="m/s" />
-          <DataRow label="Throttle"    value={vfrHud?.throttle?.toFixed(0) ?? null}        unit="%"   />
-          <DataRow label="Battery"     value={battPct !== null ? `${battPct}%` : null}    unit={battV ? `${battV}V` : undefined} />
-          <DataRow label="GPS"         value={sats !== null ? `${sats} sats  HDOP ${hdop}` : null} />
-          <DataRow label="Position"    value={lat !== null ? `${lat}, ${lon}` : null} />
-          <div style={{ marginTop: 4, display: 'flex', justifyContent: 'center' }}>
-            <Compass heading={heading} />
-          </div>
-        </Panel>
-
-        {/* System health */}
-        <Panel title={null} style={{ gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 8, fontWeight: 700, letterSpacing: '0.16em', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-              System Health
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-              <span className="status-dot" style={{ background: drone.connected ? 'var(--green)' : 'var(--text-dim)', boxShadow: drone.connected ? '0 0 6px var(--green)' : 'none' }} />
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, color: 'var(--text-muted)' }}>{drone.id}</span>
-            </span>
-          </div>
-
-          {/* Composite score ring */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0' }}>
-            <svg width="52" height="52" viewBox="0 0 52 52">
-              <circle cx="26" cy="26" r="21" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="5" />
-              <circle cx="26" cy="26" r="21" fill="none" stroke={compColor} strokeWidth="5"
-                strokeDasharray={2 * Math.PI * 21}
-                strokeDashoffset={2 * Math.PI * 21 * (1 - composite / 100)}
-                strokeLinecap="round" transform="rotate(-90 26 26)"
-                style={{ transition: 'stroke-dashoffset 0.5s ease, stroke 0.4s ease' }} />
-              <text x="26" y="27" textAnchor="middle" dominantBaseline="middle"
-                fontFamily="JetBrains Mono, monospace" fontSize="13" fontWeight="700" fill={compColor}>
-                {Math.round(composite)}
-              </text>
-            </svg>
-            <div>
-              <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: compColor }}>{compTier}</div>
-              <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 8, color: 'var(--text-muted)', marginTop: 3 }}>COMPOSITE</div>
-            </div>
-          </div>
-
-          {/* Per-subsystem score bars */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {SUBSYSTEMS.map(({ id, color }) => {
-              const s = scores[id] ?? 50
-              const c = scoreColor(s)
-              return (
-                <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 7, letterSpacing: '0.1em', color: 'var(--text-dim)', width: 28, textTransform: 'uppercase' }}>{id}</span>
-                  <div style={{ flex: 1, height: 3, background: 'var(--border2)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${s}%`, background: c, transition: 'width 0.4s ease, background 0.4s ease' }} />
-                  </div>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 9, color: 'var(--text-muted)', width: 22, textAlign: 'right' }}>{Math.round(s)}</span>
-                </div>
-              )
-            })}
-          </div>
-        </Panel>
+      {/* ── Row 1: Metric tiles ── */}
+      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+        <MetricTile title="ALTITUDE"    value={altM    ?? '—'} subtitle="meters AGL" />
+        <MetricTile title="SPEED"       value={speed   ?? '—'} subtitle="m/s ground" />
+        <MetricTile title="HEADING"     value={hdg != null ? `${Math.round(hdg)}°` : '—'} subtitle={hdgDir ?? 'degrees'} />
+        <MetricTile title="THROTTLE"    value={throttle != null ? `${throttle}%` : '—'} subtitle="percent" />
+        <MetricTile title="FLIGHT MODE" value={modeStr} subtitle={drone.connected ? 'ACTIVE' : 'OFFLINE'} />
+        <MetricTile title="PACKETS/S"   value={pktRate} subtitle={`${pktTotal} total`} accent />
       </div>
 
-      {/* ── Subsystem cards row ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 10 }}>
-        {SUBSYSTEMS.map(({ id, name, color }) => (
-          <SubsystemCard
-            key={id} id={id} name={name} color={color}
-            score={scores[id] ?? 50}
-            sparkData={drone.history[id] || []}
-          />
-        ))}
+      {/* ── Row 2: Health scores ── */}
+      <div style={{
+        background: 'var(--surface)', border: '1px solid var(--border)',
+        padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+      }}>
+        <span style={{ fontSize: 8, fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.14em', color: 'var(--text-dim)', textTransform: 'uppercase', marginRight: 4, whiteSpace: 'nowrap' }}>
+          HEALTH
+        </span>
+        <div style={{ display: 'flex', gap: 6, flex: 1, justifyContent: 'space-around' }}>
+          {HEALTH_GAUGES.map(({ id, label }) => (
+            <ArcGauge key={id} score={scores[id] ?? 0} label={label} size={70} />
+          ))}
+        </div>
+        <span style={{
+          fontSize: 9, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700,
+          padding: '3px 10px', letterSpacing: '0.1em', whiteSpace: 'nowrap', marginLeft: 4,
+          color: tierColor, background: `${tierColor}18`, border: `1px solid ${tierColor}40`,
+          borderRadius: 4,
+        }}>
+          {overallTier}
+        </span>
       </div>
 
-      {/* ── Alert feed ── */}
-      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: 0, flexShrink: 0 }}>
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
-              Alerts
-            </span>
-            {drone.alerts.length > 0 && (
-              <span style={{ background: 'var(--red)', color: '#fff', fontFamily: 'JetBrains Mono, monospace', fontSize: 9, fontWeight: 700, padding: '1px 6px', minWidth: 18, textAlign: 'center' }}>
-                {drone.alerts.length}
-              </span>
-            )}
+      {/* ── Row 3: 3-column body ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '240px 1fr 220px', gap: 6, flex: 1, minHeight: 0, overflow: 'hidden' }}>
+
+        {/* Left: Attitude + GPS */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflow: 'hidden' }}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+            <div style={panelTitle}>ATTITUDE INDICATOR</div>
+            <AttitudeIndicator
+              roll={attitude?.roll   ?? 0}
+              pitch={attitude?.pitch ?? 0}
+              yaw={attitude?.yaw     ?? 0}
+            />
           </div>
+          <GpsPanel position={drone.position ?? null} gpsRaw={gpsRaw} />
         </div>
 
-        {drone.alerts.length === 0 ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', gap: 8 }}>
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--green)', letterSpacing: '0.1em' }}>
-              ✓ SYSTEM NOMINAL
-            </span>
-          </div>
-        ) : (
-          <div>
-            {drone.alerts.map((alert, i) => (
-              <div key={i} className={`alert-item ${alert.level === 'critical' ? 'critical' : 'warn'}`}>
-                <span style={{
-                  fontFamily: 'JetBrains Mono, monospace', fontSize: 9, fontWeight: 700,
-                  padding: '2px 6px', letterSpacing: '0.08em',
-                  color: alert.level === 'critical' ? 'var(--red)' : 'var(--amber)',
-                  background: alert.level === 'critical' ? 'rgba(255,61,61,0.12)' : 'rgba(255,170,0,0.12)',
-                  flexShrink: 0,
-                }}>
-                  {alert.level === 'critical' ? 'CRIT' : 'WARN'}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, fontWeight: 700, color: 'var(--text)', letterSpacing: '0.06em' }}>
-                    {alert.code}
-                  </div>
-                  <div style={{ fontFamily: 'Inter, sans-serif', fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
-                    {alert.message}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Centre: Motor vibration */}
+        <MotorVibPanel vibeData={vibeNodes} composite={composite} />
+
+        {/* Right: Battery · Alerts · Message types */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflow: 'hidden' }}>
+          <BatteryPanel pct={battPct} voltage={battV} current={battA} />
+          <AlertsPanel  alerts={drone.alerts ?? []} />
+          <MsgTypesPanel telemetry={telem} />
+        </div>
       </div>
+
+      {/* ── Row 4: Packet log ── */}
+      <PacketLog log={packetLog} rate={pktRate} />
     </div>
   )
+}
+
+// ── Shared styles ─────────────────────────────────────────────────────────────
+
+const panelTitle = {
+  fontSize: 8,
+  fontFamily: 'JetBrains Mono, monospace',
+  fontWeight: 700,
+  letterSpacing: '0.16em',
+  color: 'var(--text-muted)',
+  textTransform: 'uppercase',
 }

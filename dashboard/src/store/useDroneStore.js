@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 const MAX_HISTORY = 60
+const MAX_VIBE_HISTORY = 200
 
 const DEFAULT_SCORES = {
   pwr: 50,
@@ -26,6 +27,7 @@ function createEmptyHistory() {
 const TELEMETRY_TYPES = new Set([
   'ATTITUDE', 'GPS_RAW_INT', 'GLOBAL_POSITION_INT',
   'VFR_HUD', 'SYS_STATUS', 'HEARTBEAT', 'RC_CHANNELS_RAW', 'BATTERY_STATUS',
+  'VIBE_NODES',
 ])
 
 function initDrone(id, overrides = {}) {
@@ -37,6 +39,7 @@ function initDrone(id, overrides = {}) {
     position: null,
     history: createEmptyHistory(),
     telemetry: {},        // raw telemetry cache: { ATTITUDE: {...}, VFR_HUD: {...}, ... }
+    vibeHistory: [],      // VIBE_NODES ring buffer: [{ t, n1:{x,y,z}, n2, n3, n4 }, ...]
     lastSeen: null,
     ...overrides,
   }
@@ -147,6 +150,14 @@ const useDroneStore = create((set) => ({
             }
           }
 
+          // Append VIBE_NODES sample to per-drone ring buffer
+          if (type === 'VIBE_NODES' && data.n1) {
+            const entry = { t: Date.now(), n1: data.n1, n2: data.n2, n3: data.n3, n4: data.n4 }
+            const vibeHistory = [...(existing.vibeHistory || []), entry]
+            if (vibeHistory.length > MAX_VIBE_HISTORY) vibeHistory.splice(0, vibeHistory.length - MAX_VIBE_HISTORY)
+            updates.vibeHistory = vibeHistory
+          }
+
           return {
             drones: {
               ...state.drones,
@@ -157,7 +168,8 @@ const useDroneStore = create((set) => ({
         break
       }
 
-      case 'STATE_UPDATE': {
+      case 'STATE_UPDATE':
+      case 'HEALTH_SCORES': {
         const id = msg.drone_id
         if (!id) break
         const raw = msg.scores || {}
