@@ -2,8 +2,13 @@
 storage_engine.py — SQLite flight-log persistence for DronePulse.
 
 Each ConsumerWorker owns one StorageEngine instance.  The engine manages
-flight sessions automatically: a session opens on the first incoming packet
-and closes after SESSION_TIMEOUT_S seconds of silence (default 30 s).
+flight sessions based on MAVLink arm/disarm events:
+
+  - Session OPENS  when the drone arms   (HEARTBEAT base_mode bit 7 → 1)
+  - Session CLOSES when the drone disarms (HEARTBEAT base_mode bit 7 → 0)
+  - Fallback close after SESSION_TIMEOUT_S seconds of silence (crash / lost link)
+
+Only telemetry received while armed is stored in the database.
 """
 
 import json
@@ -108,6 +113,8 @@ class StorageEngine:
         self._max_alt_m: "float | None" = None
         self._max_speed: "float | None" = None
         self._min_battery: "float | None" = None
+        # ARM state — None until first HEARTBEAT is received
+        self._armed: "bool | None" = None
 
         logger.info("[storage] opened DB for %s at %s", drone_id, self.db_path)
 
@@ -192,26 +199,56 @@ class StorageEngine:
         auto_logger.save_flight(flight_id, self.drone_id, self.db_path)
 
     def check_session_timeout(self):
-        """Call periodically from a background thread to close stale sessions."""
+        """Fallback: close a stale armed session if no packets arrive for SESSION_TIMEOUT_S.
+
+        Handles drone crash or lost link while armed (disarm packet never arrives).
+        """
         if self._flight_id is not None and self._last_packet_ts is not None:
             if time.time() - self._last_packet_ts > SESSION_TIMEOUT_S:
-                logger.info(
-                    "[storage] session timeout for drone %s (no packets for %ds)",
+                logger.warning(
+                    "[storage] timeout closing flight %s for drone %s"
+                    " (no packets for %ds — possible crash or lost link)",
+                    self._flight_id,
                     self.drone_id,
                     SESSION_TIMEOUT_S,
                 )
+                self._armed = False
                 self._close_session()
 
     # ── Public store methods ─────────────────────────────────────────────
 
     def store_packet(self, packet: dict):
-        """Persist one telemetry packet and update in-flight session stats."""
-        if self._flight_id is None:
-            self._open_session()
+        """Persist one telemetry packet.
 
-        self._last_packet_ts = time.time()
+        Session lifecycle is driven by HEARTBEAT arm/disarm events:
+          - ARM  (base_mode bit 7 → 1): opens a new session
+          - DISARM (base_mode bit 7 → 0): closes and saves the session
+        Packets received while the drone is disarmed are not stored.
+        """
         msg_type = packet.get("type", "UNKNOWN")
         data = packet.get("data", {})
+
+        # ── ARM / DISARM detection ───────────────────────────────────────
+        if msg_type == "HEARTBEAT":
+            base_mode = data.get("base_mode")
+            if base_mode is not None:
+                armed_now = bool(base_mode & 128)
+                if armed_now and not self._armed:
+                    logger.info("[storage] ARM detected for drone %s", self.drone_id)
+                    self._armed = True
+                    if self._flight_id is None:
+                        self._open_session()
+                elif not armed_now and self._armed:
+                    logger.info("[storage] DISARM detected for drone %s", self.drone_id)
+                    self._armed = False
+                    if self._flight_id is not None:
+                        self._close_session()
+
+        # ── Drop packets while no active session (drone not armed) ───────
+        if self._flight_id is None:
+            return
+
+        self._last_packet_ts = time.time()
         ts_ms = packet.get("ts", time.time()) * 1000  # store as ms since epoch
 
         # Update live session stats used when the session is eventually closed
