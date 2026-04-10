@@ -235,7 +235,7 @@ export default function FlightLogsPage() {
   const [expanded, setExpanded] = useState(null)        // currently expanded flight id
   const [expandedScores, setExpandedScores] = useState({}) // cache {flightId: [...]}
   const [downloading, setDownloading] = useState(null)
-  const [autoSaveConfig, setAutoSaveConfig] = useState(null)
+  const [autoSaveConfig, setAutoSaveConfig] = useState({ dir: 'data/logs', formats: ['json', 'csv'], _loading: true })
   const [savedFiles, setSavedFiles] = useState([])
 
   const fetchFlights = useCallback(async () => {
@@ -260,8 +260,8 @@ export default function FlightLogsPage() {
   useEffect(() => {
     fetch(`${API}/auto-save/config`)
       .then((r) => r.ok ? r.json() : null)
-      .then((cfg) => { if (cfg) setAutoSaveConfig(cfg) })
-      .catch(() => {})
+      .then((cfg) => { setAutoSaveConfig(cfg ? cfg : { dir: 'data/logs', formats: ['json', 'csv'], _unavailable: true }) })
+      .catch(() => { setAutoSaveConfig({ dir: 'data/logs', formats: ['json', 'csv'], _unavailable: true }) })
     fetch(`${API}/auto-save/files`)
       .then((r) => r.ok ? r.json() : [])
       .then(setSavedFiles)
@@ -312,30 +312,50 @@ export default function FlightLogsPage() {
         )}
       </div>
 
-      {/* Auto-save status bar */}
-      {autoSaveConfig && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, padding: '7px 12px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 7 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(16,185,129,0.18)', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Auto-save ON
-          </span>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', monospace" }}>
-            {autoSaveConfig.dir}
-          </span>
-          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-            [{autoSaveConfig.formats.join(', ')}]
-          </span>
-          {window.electronAPI?.openLogsFolder && (
-            <button
-              onClick={() => window.electronAPI.openLogsFolder(autoSaveConfig.dir)}
-              style={{ ...iconBtnStyle, marginLeft: 'auto', gap: 5, fontSize: 11 }}
-              title="Open logs folder in Explorer"
-            >
-              <Folder size={12} />
-              Open Logs Folder
-            </button>
-          )}
-        </div>
-      )}
+      {/* Auto-save status bar — always visible */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+        padding: '7px 12px', borderRadius: 7,
+        background: autoSaveConfig?._loading ? 'transparent' : autoSaveConfig?._unavailable ? 'rgba(255,170,0,0.06)' : 'rgba(16,185,129,0.06)',
+        border: `1px solid ${autoSaveConfig?._loading ? 'var(--border)' : autoSaveConfig?._unavailable ? 'rgba(255,170,0,0.25)' : 'rgba(16,185,129,0.2)'}`,
+      }}>
+        {autoSaveConfig?._loading ? (
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Checking auto-save status…</span>
+        ) : autoSaveConfig?._unavailable ? (
+          <>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(255,170,0,0.18)', color: '#ffaa00', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Auto-save
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Active — logs saved to</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', monospace" }}>
+              {autoSaveConfig.dir}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>(API updating, saved files will appear after redeploy)</span>
+          </>
+        ) : (
+          <>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(16,185,129,0.18)', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              Auto-save ON
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', monospace" }}>
+              {autoSaveConfig.dir}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+              [{autoSaveConfig.formats.join(', ')}]
+            </span>
+            {window.electronAPI?.openLogsFolder && (
+              <button
+                onClick={() => window.electronAPI.openLogsFolder(autoSaveConfig.dir)}
+                style={{ ...iconBtnStyle, marginLeft: 'auto', gap: 5, fontSize: 11 }}
+                title="Open logs folder in Explorer"
+              >
+                <Folder size={12} />
+                Open Logs Folder
+              </button>
+            )}
+          </>
+        )}
+      </div>
 
       {/* Empty state */}
       {!loading && flights.length === 0 && !error && (
