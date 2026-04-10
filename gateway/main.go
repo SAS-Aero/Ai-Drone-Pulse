@@ -7,8 +7,11 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -832,6 +835,37 @@ func dashboardPageHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(dashboardHTML)
 }
 
+// storageProxyHandler reverse-proxies /storage/* to the Python storage API.
+// Target is read from STORAGE_API_URL env var (default: http://localhost:8081).
+// The /storage prefix is stripped before forwarding.
+func storageProxyHandler() http.HandlerFunc {
+	targetStr := os.Getenv("STORAGE_API_URL")
+	if targetStr == "" {
+		targetStr = "http://localhost:8081"
+	}
+	target, err := url.Parse(targetStr)
+	if err != nil {
+		log.Fatalf("[proxy] invalid STORAGE_API_URL %q: %v", targetStr, err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	// Allow CORS for the dashboard
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// Strip /storage prefix before forwarding
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/storage")
+		if r.URL.Path == "" {
+			r.URL.Path = "/"
+		}
+		proxy.ServeHTTP(w, r)
+	}
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
@@ -882,6 +916,8 @@ func main() {
 	mux.HandleFunc("/api/drones", dronesAPIHandler(hub))
 	mux.HandleFunc("/api/telemetry", telemetryAPIHandler(hub))
 	mux.HandleFunc("/api/vibration", vibrationAPIHandler(hub))
+	// Proxy /storage/* → Python storage API (workers service)
+	mux.HandleFunc("/storage/", storageProxyHandler())
 	mux.HandleFunc("/", dashboardPageHandler)
 
 	log.Printf("DronePulse gateway listening on :%s", port)
