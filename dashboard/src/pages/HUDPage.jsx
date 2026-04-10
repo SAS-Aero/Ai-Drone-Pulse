@@ -144,17 +144,17 @@ function AttitudeIndicator({ roll = 0, pitch = 0, yaw = 0 }) {
         }}>
           <div style={{
             position: 'absolute', left: 0, right: 0, top: 0,
-            height: `calc(50% - ${pitchPx}px + 40px)`,
+            height: `calc(50% - ${pitchPx}px)`,
             background: 'linear-gradient(to bottom, #0a2a4a 0%, #1a5080 60%, #2060a0 100%)',
           }} />
           <div style={{
             position: 'absolute', left: 0, right: 0, bottom: 0,
-            height: `calc(50% + ${pitchPx}px + 40px)`,
+            height: `calc(50% + ${pitchPx}px)`,
             background: 'linear-gradient(to top, #3d1800 0%, #6b3010 70%, #7a3a12 100%)',
           }} />
           <div style={{
             position: 'absolute', left: 0, right: 0,
-            top: `calc(50% - ${pitchPx}px + 40px)`,
+            top: `calc(50% - ${pitchPx}px)`,
             height: 1.5, background: 'rgba(255,255,255,0.7)',
           }} />
           {[-20, -10, 10, 20].map((p) => {
@@ -162,7 +162,7 @@ function AttitudeIndicator({ roll = 0, pitch = 0, yaw = 0 }) {
             return (
               <div key={p} style={{
                 position: 'absolute', left: '50%', transform: 'translateX(-50%)',
-                top: `calc(50% + ${offset}px + 40px)`,
+                top: `calc(50% + ${offset}px)`,
                 height: 1, width: Math.abs(p) === 10 ? 60 : 80,
                 background: 'rgba(255,255,255,0.35)',
               }}>
@@ -490,7 +490,7 @@ function AlertsPanel({ alerts = [] }) {
           <div style={{ fontSize: 10, fontFamily: 'JetBrains Mono, monospace', color: 'var(--text-dim)' }}>All systems nominal</div>
         ) : (
           alerts.map((a, i) => (
-            <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+            <div key={a.code ?? i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
               <span style={{
                 fontSize: 8, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700,
                 padding: '1px 5px', letterSpacing: '0.08em', flexShrink: 0, marginTop: 1,
@@ -574,7 +574,7 @@ function PacketLog({ log, rate }) {
           </div>
         ) : (
           log.map((entry, i) => (
-            <div key={i} style={{
+            <div key={entry.ts ? `${entry.ts}-${i}` : i} style={{
               display: 'flex', gap: 10, padding: '2px 12px',
               borderBottom: '1px solid rgba(255,255,255,0.02)',
               fontSize: 10, fontFamily: 'JetBrains Mono, monospace',

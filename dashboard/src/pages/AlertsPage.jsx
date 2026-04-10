@@ -189,7 +189,7 @@ export default function AlertsPage() {
           </div>
           <div>
             {alerts.map((alert, i) => (
-              <AlertItem key={i} alert={alert} droneId={droneId} />
+              <AlertItem key={alert.code ?? i} alert={alert} droneId={droneId} />
             ))}
           </div>
         </div>

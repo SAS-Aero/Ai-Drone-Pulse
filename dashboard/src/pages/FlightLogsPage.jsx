@@ -288,8 +288,8 @@ export default function FlightLogsPage() {
           <table style={tableStyle}>
             <thead>
               <tr>
-                {['', 'Drone', 'Date', 'Duration', 'Max Alt', 'Max Speed', 'Min Bat', 'Tags', 'Actions'].map((h, i) => (
-                  <th key={i} style={thStyle}>{h}</th>
+                {['', 'Drone', 'Date', 'Duration', 'Max Alt', 'Max Speed', 'Min Bat', 'Tags', 'Actions'].map((h) => (
+                  <th key={h || 'expand'} style={thStyle}>{h}</th>
                 ))}
               </tr>
             </thead>
@@ -460,7 +460,7 @@ function ScoreDetailRow({ flightId, onScoresLoaded }) {
       })
       .catch(() => setScores([]))
       .finally(() => setLoading(false))
-  }, [flightId])
+  }, [flightId, onScoresLoaded])
 
   if (loading) return <p style={mutedText}>Loading scores…</p>
   if (!scores || scores.length === 0) return <p style={mutedText}>No score data recorded for this flight.</p>

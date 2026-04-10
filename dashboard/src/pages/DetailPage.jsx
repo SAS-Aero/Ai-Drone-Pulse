@@ -288,7 +288,7 @@ export default function DetailPage() {
               const severity = alert.severity?.toLowerCase() || 'warn'
               return (
                 <div
-                  key={i}
+                  key={alert.code ?? i}
                   className={`alert-item ${severity === 'critical' ? 'critical' : 'warn'}`}
                 >
                   <span

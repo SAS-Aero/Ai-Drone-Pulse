@@ -227,8 +227,8 @@ export default function HeatmapPage() {
           Density
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
-          {['#331100', '#662200', '#993300', '#cc5500', '#ff6600', '#ff9944', '#ffcc88'].map((c, i) => (
-            <div key={i} style={{ width: 18, height: 10, background: c }} />
+          {['#331100', '#662200', '#993300', '#cc5500', '#ff6600', '#ff9944', '#ffcc88'].map((c) => (
+            <div key={c} style={{ width: 18, height: 10, background: c }} />
           ))}
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
