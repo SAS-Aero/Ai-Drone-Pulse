@@ -9,6 +9,7 @@ Env:  STORAGE_DB_PATH  (default: data/dronepulse.db)
 import json
 import math
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 DB_PATH: str = os.environ.get("STORAGE_DB_PATH", "data/dronepulse.db")
+_AUTO_LOG_DIR = Path(os.environ.get("AUTO_LOG_DIR", "data/logs"))
+_AUTO_LOG_FORMATS = [
+    f.strip().lower()
+    for f in os.environ.get("AUTO_LOG_FORMATS", "json,csv").split(",")
+    if f.strip()
+]
 
 app = FastAPI(title="DronePulse Flight Log API", version="1.0.0")
 
@@ -598,6 +605,78 @@ def flight_report(flight_id: int):
         }
     finally:
         conn.close()
+
+
+# ── /auto-save ────────────────────────────────────────────────────────────────
+
+@app.get("/auto-save/config")
+def auto_save_config():
+    """Return the current auto-save configuration."""
+    return {
+        "enabled": True,
+        "dir": str(_AUTO_LOG_DIR),
+        "formats": _AUTO_LOG_FORMATS,
+    }
+
+
+@app.get("/auto-save/files")
+def auto_save_files():
+    """
+    List all auto-saved log files on disk, sorted newest first.
+    Parses flight_id and drone_id from the filename stem:
+      {drone_id}_flight{id}_{YYYY-MM-DD_HHMMSS}[_telemetry].{ext}
+    """
+    if not _AUTO_LOG_DIR.exists():
+        return []
+
+    _STEM_RE = re.compile(
+        r"^(?P<drone_id>.+?)_flight(?P<flight_id>\d+)_(?P<date>\d{4}-\d{2}-\d{2}_\d{6})"
+    )
+
+    files = []
+    for p in sorted(_AUTO_LOG_DIR.iterdir(), key=lambda f: f.stat().st_mtime, reverse=True):
+        if not p.is_file():
+            continue
+        m = _STEM_RE.match(p.stem)
+        if not m:
+            continue
+        stat = p.stat()
+        files.append({
+            "filename": p.name,
+            "flight_id": int(m.group("flight_id")),
+            "drone_id": m.group("drone_id"),
+            "size_kb": round(stat.st_size / 1024, 1),
+            "created_ts": stat.st_mtime,
+        })
+
+    return files
+
+
+@app.get("/auto-save/files/{filename}")
+def auto_save_download(filename: str):
+    """Download a specific auto-saved log file."""
+    # Prevent path traversal — only allow plain filenames
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = _AUTO_LOG_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    ext = file_path.suffix.lower()
+    media_types = {
+        ".json": "application/json",
+        ".csv":  "text/csv",
+        ".gpx":  "application/gpx+xml",
+        ".kml":  "application/vnd.google-earth.kml+xml",
+    }
+    media_type = media_types.get(ext, "application/octet-stream")
+
+    return Response(
+        content=file_path.read_bytes(),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

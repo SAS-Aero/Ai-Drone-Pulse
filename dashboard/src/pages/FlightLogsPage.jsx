@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Database, Download, ChevronDown, ChevronRight, RefreshCw, FileJson, FileText, Play, Printer, Map, Activity } from 'lucide-react'
+import { Database, Download, ChevronDown, ChevronRight, RefreshCw, FileJson, FileText, Play, Printer, Map, Activity, Folder } from 'lucide-react'
 import useDroneStore from '../store/useDroneStore'
 
 // Point this at the storage API. Override with VITE_API_URL env var at build time.
@@ -209,6 +209,18 @@ async function downloadLog(flight, setDownloading) {
   }
 }
 
+async function downloadSavedFile(filename, setDownloading) {
+  setDownloading(`saved-${filename}`)
+  try {
+    const res = await fetch(`${API}/auto-save/files/${encodeURIComponent(filename)}`)
+    if (!res.ok) throw new Error(`API ${res.status}`)
+    const blob = await res.blob()
+    triggerDownload(blob, filename)
+  } finally {
+    setDownloading(null)
+  }
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function FlightLogsPage() {
@@ -223,6 +235,8 @@ export default function FlightLogsPage() {
   const [expanded, setExpanded] = useState(null)        // currently expanded flight id
   const [expandedScores, setExpandedScores] = useState({}) // cache {flightId: [...]}
   const [downloading, setDownloading] = useState(null)
+  const [autoSaveConfig, setAutoSaveConfig] = useState(null)
+  const [savedFiles, setSavedFiles] = useState([])
 
   const fetchFlights = useCallback(async () => {
     setLoading(true)
@@ -241,6 +255,18 @@ export default function FlightLogsPage() {
   }, [filterDrone])
 
   useEffect(() => { fetchFlights() }, [fetchFlights])
+
+  // Fetch auto-save config and saved file list once on mount
+  useEffect(() => {
+    fetch(`${API}/auto-save/config`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((cfg) => { if (cfg) setAutoSaveConfig(cfg) })
+      .catch(() => {})
+    fetch(`${API}/auto-save/files`)
+      .then((r) => r.ok ? r.json() : [])
+      .then(setSavedFiles)
+      .catch(() => {})
+  }, [])
 
   const toggleRow = (flight) => {
     if (expanded === flight.id) {
@@ -285,6 +311,31 @@ export default function FlightLogsPage() {
           <span style={{ fontSize: 12, color: 'var(--red)', maxWidth: 500 }}>{error}</span>
         )}
       </div>
+
+      {/* Auto-save status bar */}
+      {autoSaveConfig && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, padding: '7px 12px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 7 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 10, background: 'rgba(16,185,129,0.18)', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Auto-save ON
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', monospace" }}>
+            {autoSaveConfig.dir}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+            [{autoSaveConfig.formats.join(', ')}]
+          </span>
+          {window.electronAPI?.openLogsFolder && (
+            <button
+              onClick={() => window.electronAPI.openLogsFolder(autoSaveConfig.dir)}
+              style={{ ...iconBtnStyle, marginLeft: 'auto', gap: 5, fontSize: 11 }}
+              title="Open logs folder in Explorer"
+            >
+              <Folder size={12} />
+              Open Logs Folder
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Empty state */}
       {!loading && flights.length === 0 && !error && (
@@ -360,12 +411,18 @@ export default function FlightLogsPage() {
 
                     {/* Tags */}
                     <td style={tdStyle}>
-                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                         {parseTags(f.tags).map((tag) => (
                           <span key={tag} style={{ ...tagBadge, background: TAG_COLORS[tag] || 'var(--border2)' }}>
                             {tag.replace(/_/g, ' ')}
                           </span>
                         ))}
+                        {savedFiles.filter((sf) => sf.flight_id === f.id).length > 0 && (
+                          <span style={{ ...tagBadge, background: 'rgba(16,185,129,0.18)', color: '#10b981', border: '1px solid rgba(16,185,129,0.3)' }}
+                            title="Auto-saved log files exist for this flight">
+                            saved {savedFiles.filter((sf) => sf.flight_id === f.id).length} files
+                          </span>
+                        )}
                       </div>
                     </td>
 
@@ -457,6 +514,7 @@ export default function FlightLogsPage() {
                         <ScoreDetailRow
                           flightId={f.id}
                           onScoresLoaded={(scores) => onScoresCached(f.id, scores)}
+                          savedFiles={savedFiles.filter((sf) => sf.flight_id === f.id)}
                         />
                       </td>
                     </tr>
@@ -473,9 +531,10 @@ export default function FlightLogsPage() {
 
 // ── Score detail row (loaded lazily when expanded) ────────────────────────────
 
-function ScoreDetailRow({ flightId, onScoresLoaded }) {
+function ScoreDetailRow({ flightId, onScoresLoaded, savedFiles = [] }) {
   const [scores, setScores] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [downloading, setDownloading] = useState(null)
 
   useEffect(() => {
     fetch(`${API}/flights/${flightId}/scores`)
@@ -515,6 +574,29 @@ function ScoreDetailRow({ flightId, onScoresLoaded }) {
       {/* Composite sparkline */}
       <ChartRow label="Composite" data={scores.map((s) => s.composite)} color={SCORE_COLORS.composite} />
       <ChartRow label="Power" data={scores.map((s) => s.pwr)} color={SCORE_COLORS.pwr} />
+
+      {/* Auto-saved log files */}
+      {savedFiles.length > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+            Auto-saved Log Files
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {savedFiles.map((sf) => (
+              <button
+                key={sf.filename}
+                onClick={() => downloadSavedFile(sf.filename, setDownloading)}
+                disabled={downloading === `saved-${sf.filename}`}
+                style={{ ...dlBtnStyle, color: '#10b981', borderColor: 'rgba(16,185,129,0.3)' }}
+                title={`${sf.size_kb} KB — click to download`}
+              >
+                <Download size={11} />
+                {downloading === `saved-${sf.filename}` ? '…' : sf.filename}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

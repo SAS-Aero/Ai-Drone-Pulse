@@ -15,6 +15,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import auto_logger
+
 logger = logging.getLogger(__name__)
 
 SESSION_TIMEOUT_S: int = int(os.environ.get("SESSION_TIMEOUT_S", 30))
@@ -186,6 +188,8 @@ class StorageEngine:
         self._flight_id = None
         self._session_start = None
         self._last_packet_ts = None
+
+        auto_logger.save_flight(flight_id, self.drone_id, self.db_path)
 
     def check_session_timeout(self):
         """Call periodically from a background thread to close stale sessions."""

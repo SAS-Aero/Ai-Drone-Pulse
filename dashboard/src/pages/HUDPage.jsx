@@ -93,13 +93,13 @@ function fmt(val, dec = 1) {
 
 // ── Metric tile ───────────────────────────────────────────────────────────────
 
-function MetricTile({ title, value, subtitle, accent = false }) {
+function MetricTile({ title, value, subtitle, accent = false, valueColor, borderColor }) {
   return (
-    <div style={{ flex: 1, background: 'var(--surface)', border: '1px solid var(--border)', padding: '10px 14px', minWidth: 0 }}>
+    <div style={{ flex: 1, background: 'var(--surface)', border: `1px solid ${borderColor || 'var(--border)'}`, padding: '10px 14px', minWidth: 0, boxShadow: borderColor ? `0 0 8px ${borderColor}33` : 'none' }}>
       <div style={{ fontSize: 8, fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.14em', color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: 4 }}>
         {title}
       </div>
-      <div style={{ fontSize: 22, fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, color: accent ? '#06b6d4' : 'var(--text)', lineHeight: 1, letterSpacing: '0.04em' }}>
+      <div style={{ fontSize: 22, fontFamily: 'JetBrains Mono, monospace', fontWeight: 800, color: valueColor || (accent ? '#06b6d4' : 'var(--text)'), lineHeight: 1, letterSpacing: '0.04em' }}>
         {value}
       </div>
       <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 4, fontFamily: 'JetBrains Mono, monospace' }}>
@@ -697,6 +697,8 @@ export default function HUDPage() {
   const throttle = vfrHud?.throttle?.toFixed(0) ?? null
   const modeNum  = heartbeat?.custom_mode
   const modeStr  = modeNum != null ? (FLIGHT_MODES[modeNum] ?? `Mode ${modeNum}`) : '—'
+  // MAVLink: bit 7 of base_mode = MAV_MODE_FLAG_SAFETY_ARMED
+  const isArmed  = heartbeat?.base_mode != null ? (heartbeat.base_mode & 128) !== 0 : null
   const battPct  = sysStatus?.battery_remaining ?? null
   const battV    = sysStatus?.voltage_battery != null ? (sysStatus.voltage_battery / 1000).toFixed(1) : null
   const battA    = sysStatus?.current_battery != null ? (sysStatus.current_battery / 100).toFixed(1) : null
@@ -738,6 +740,13 @@ export default function HUDPage() {
         <MetricTile title="HEADING"     value={hdg != null ? `${Math.round(hdg)}°` : '—'} subtitle={hdgDir ?? 'degrees'} />
         <MetricTile title="THROTTLE"    value={throttle != null ? `${throttle}%` : '—'} subtitle="percent" />
         <MetricTile title="FLIGHT MODE" value={modeStr} subtitle={drone.connected ? 'ACTIVE' : 'OFFLINE'} />
+        <MetricTile
+          title="ARM STATUS"
+          value={isArmed === null ? '—' : isArmed ? 'ARMED' : 'DISARMED'}
+          subtitle={isArmed === null ? 'awaiting data' : isArmed ? 'motors live' : 'motors safe'}
+          valueColor={isArmed === null ? undefined : isArmed ? '#ff3d3d' : '#00ff88'}
+          borderColor={isArmed === null ? undefined : isArmed ? '#ff3d3d' : '#00ff88'}
+        />
         <MetricTile title="PACKETS/S"   value={pktRate} subtitle={`${pktTotal} total`} accent />
       </div>
 
