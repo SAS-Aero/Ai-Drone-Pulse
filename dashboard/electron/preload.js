@@ -6,3 +6,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
   close: () => ipcRenderer.send('window-close'),
   isElectron: true,
 })
+

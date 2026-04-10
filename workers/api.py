@@ -404,6 +404,84 @@ def export_kml(flight_id: int):
         conn.close()
 
 
+# ── /flights/{id}/export/telemetry.csv ───────────────────────────────────────
+
+@app.get("/flights/{flight_id}/export/telemetry.csv")
+def export_telemetry_csv(flight_id: int):
+    """
+    Export all raw telemetry packets for a flight as a CSV file.
+    Each row is one MAVLink packet.  Key fields are flattened into named
+    columns; the full packet JSON is preserved in the last 'raw_json' column.
+    """
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT ts, packet_type, data FROM telemetry WHERE flight_id = ? ORDER BY ts",
+            (flight_id,),
+        ).fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail="No telemetry found for this flight")
+
+        FIELDS = [
+            "lat", "lon", "alt_m",
+            "roll_deg", "pitch_deg", "yaw_deg",
+            "battery_pct", "voltage_v", "current_a",
+            "groundspeed_ms", "heading_deg",
+            "hdop", "satellites",
+        ]
+
+        def _extract(ptype, d):
+            out = {f: "" for f in FIELDS}
+            if ptype == "GLOBAL_POSITION_INT":
+                out["lat"]   = d.get("lat", "")
+                out["lon"]   = d.get("lon", "")
+                out["alt_m"] = round(d.get("alt", 0) / 1000, 2) if d.get("alt") else ""
+            elif ptype == "GPS_RAW_INT":
+                out["lat"]        = d.get("lat", "")
+                out["lon"]        = d.get("lon", "")
+                out["hdop"]       = d.get("eph", "")
+                out["satellites"] = d.get("satellites_visible", "")
+            elif ptype == "ATTITUDE":
+                out["roll_deg"]  = round(math.degrees(d.get("roll",  0)), 2)
+                out["pitch_deg"] = round(math.degrees(d.get("pitch", 0)), 2)
+                out["yaw_deg"]   = round(math.degrees(d.get("yaw",   0)), 2)
+            elif ptype in ("BATTERY_STATUS", "SYS_STATUS"):
+                out["battery_pct"] = d.get("battery_remaining", "")
+                vb = d.get("voltage_battery")
+                cb = d.get("current_battery")
+                out["voltage_v"] = round(vb / 1000, 3) if vb is not None else ""
+                out["current_a"] = round(cb / 100,  2) if cb is not None else ""
+            elif ptype == "VFR_HUD":
+                out["groundspeed_ms"] = d.get("groundspeed", "")
+                out["heading_deg"]    = d.get("heading", "")
+            return out
+
+        lines = ["ts_ms,datetime_utc,packet_type," + ",".join(FIELDS) + ",raw_json"]
+        for row in rows:
+            ts  = row["ts"]
+            dt  = datetime.datetime.utcfromtimestamp(ts / 1000).strftime(
+                "%Y-%m-%dT%H:%M:%S.%f"
+            )[:-3] + "Z"
+            d   = json.loads(row["data"])
+            ext = _extract(row["packet_type"], d)
+            vals = ",".join(str(ext[f]) for f in FIELDS)
+            raw  = '"' + json.dumps(d).replace('"', '""') + '"'
+            lines.append(f"{ts},{dt},{row['packet_type']},{vals},{raw}")
+
+        body = "\n".join(lines)
+        return Response(
+            content=body,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="flight_{flight_id}_telemetry.csv"'
+                )
+            },
+        )
+    finally:
+        conn.close()
+
+
 # ── /heatmap ──────────────────────────────────────────────────────────────────
 
 @app.get("/heatmap")

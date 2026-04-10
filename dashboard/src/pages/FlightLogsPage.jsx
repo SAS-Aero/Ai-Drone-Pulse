@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Database, Download, ChevronDown, ChevronRight, RefreshCw, FileJson, FileText, Play, Printer, Map } from 'lucide-react'
+import { Database, Download, ChevronDown, ChevronRight, RefreshCw, FileJson, FileText, Play, Printer, Map, Activity } from 'lucide-react'
 import useDroneStore from '../store/useDroneStore'
 
 // Point this at the storage API. Override with VITE_API_URL env var at build time.
@@ -189,6 +189,21 @@ async function downloadKML(flight, setDownloading) {
     if (!res.ok) throw new Error(`API ${res.status}`)
     const blob = await res.blob()
     triggerDownload(blob, `flight_${flight.id}_${flight.drone_id}.kml`)
+  } finally {
+    setDownloading(null)
+  }
+}
+
+async function downloadLog(flight, setDownloading) {
+  setDownloading(`log-${flight.id}`)
+  try {
+    const res = await fetch(`${API}/flights/${flight.id}/export/telemetry.csv`)
+    if (!res.ok) throw new Error(`API ${res.status}`)
+    const blob = await res.blob()
+    const date = new Date(flight.start_ts * 1000).toISOString().slice(0, 10)
+    triggerDownload(blob, `DronePulse_${flight.drone_id}_${date}_telemetry.csv`)
+  } catch {
+    alert('Could not download telemetry log. Is the storage API running?')
   } finally {
     setDownloading(null)
   }
@@ -419,6 +434,17 @@ export default function FlightLogsPage() {
                         >
                           <Download size={11} />
                           {downloading === `kml-${f.id}` ? '…' : 'KML'}
+                        </button>
+
+                        {/* Raw telemetry log */}
+                        <button
+                          onClick={() => downloadLog(f, setDownloading)}
+                          disabled={downloading === `log-${f.id}`}
+                          style={dlBtnStyle}
+                          title="Download all raw telemetry packets as CSV"
+                        >
+                          <Activity size={11} />
+                          {downloading === `log-${f.id}` ? '…' : 'LOG'}
                         </button>
                       </div>
                     </td>
